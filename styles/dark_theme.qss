@@ -1,0 +1,88 @@
+QWidget {
+    background-color: #0b0e13;
+    color: #e6e9ef;
+    font-family: "Segoe UI", "Inter", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #0b0e13;
+}
+
+#appTitle {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f0f2f5;
+}
+
+#appSubtitle {
+    color: #7a8699;
+    font-size: 12px;
+}
+
+#cameraView {
+    background-color: #11161d;
+    border: 1px solid #1f2630;
+    border-radius: 8px;
+    color: #7a8699;
+    font-size: 14px;
+}
+
+#sectionLabel {
+    color: #aab4c2;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 0;
+}
+
+#metricTile {
+    background-color: #11161d;
+    border: 1px solid #1f2630;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+#metricValue {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f0f2f5;
+}
+
+#metricCaption {
+    color: #7a8699;
+    font-size: 11px;
+}
+
+QPushButton {
+    background-color: #1a212c;
+    border: 1px solid #2a3340;
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: #e6e9ef;
+}
+
+QPushButton:hover {
+    background-color: #232c39;
+}
+
+QPushButton:checked {
+    background-color: #2a3340;
+    border-color: #4dd2ff;
+}
+
+#primaryButton {
+    background-color: #1f6fb2;
+    border-color: #1f6fb2;
+    font-weight: 600;
+}
+
+#primaryButton:hover {
+    background-color: #2784d1;
+}
+
+#primaryButton:checked {
+    background-color: #c0392b;
+    border-color: #c0392b;
+}
