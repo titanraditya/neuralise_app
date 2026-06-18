@@ -41,6 +41,12 @@ class ControlBar(QWidget):
         if not enabled:
             self._record_btn.setChecked(False)
 
+    def set_eeg_connected(self, connected: bool) -> None:
+        self._eeg_btn.blockSignals(True)
+        self._eeg_btn.setChecked(connected)
+        self._eeg_btn.setText("Disconnect EEG" if connected else "Connect EEG")
+        self._eeg_btn.blockSignals(False)
+
     def _on_camera_toggled(self, checked: bool) -> None:
         self._camera_btn.setText("Disconnect Camera" if checked else "Connect Camera")
         self.camera_toggled.emit(checked)
