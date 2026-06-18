@@ -44,6 +44,14 @@ class CameraPanel(QWidget):
         self._view.setText("No camera connected")
         self._view.setPixmap(QPixmap())
 
+    def update_frame(self, frame) -> None:
+        self._view.setPixmap(self._frame_to_pixmap(frame))
+
+    def clear(self) -> None:
+        self._timer.stop()
+        self._view.setPixmap(QPixmap())
+        self._view.setText("No camera connected")
+
     def _refresh(self) -> None:
         if self._source is None:
             return

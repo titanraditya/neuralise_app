@@ -1,7 +1,8 @@
 from PySide6.QtCore import QTime, Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
-from core.sources.mock import MockCameraSource, MockEEGSource
+from camera.camera_thread import CameraThread
+from core.sources.mock import MockEEGSource
 from ui.widgets.camera_panel import CameraPanel
 from ui.widgets.control_bar import ControlBar
 from ui.widgets.eeg_panel import EEGPanel
@@ -25,6 +26,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Neuralise — Drowsiness Detection")
         self.resize(1200, 720)
 
+        self._camera_thread: CameraThread | None = None
         self._camera_panel = CameraPanel()
         self._eeg_panel = EEGPanel()
         self._status_panel = StatusPanel()
@@ -73,13 +75,51 @@ class MainWindow(QMainWindow):
         self._control_bar.camera_toggled.connect(self._on_camera_toggled)
         self._control_bar.eeg_toggled.connect(self._on_eeg_toggled)
         self._control_bar.session_toggled.connect(self._on_session_toggled)
+        self._control_bar.record_toggled.connect(self._on_record_toggled)
 
     def _on_camera_toggled(self, connected: bool) -> None:
         if connected:
-            self._camera_panel.set_source(MockCameraSource())
-            self._camera_panel.start()
+            self._camera_thread = CameraThread(self)
+            self._camera_thread.frame_ready.connect(self._camera_panel.update_frame)
+            self._camera_thread.analysis_ready.connect(self._on_analysis)
+            self._camera_thread.recording_saved.connect(self._on_recording_saved)
+            self._camera_thread.camera_error.connect(self._on_camera_error)
+            self._camera_thread.start_camera()
+            self._control_bar.set_record_enabled(True)
         else:
-            self._camera_panel.set_source(None)
+            self._control_bar.set_record_enabled(False)
+            if self._camera_thread:
+                self._camera_thread.stop_camera()
+                self._camera_thread = None
+            self._camera_panel.clear()
+            self._status_panel.set_status("idle")
+            self._status_panel.set_metric("perclos", "--")
+
+    def _on_record_toggled(self, recording: bool) -> None:
+        if self._camera_thread is None:
+            return
+        if recording:
+            self._camera_thread.start_recording()
+        else:
+            self._camera_thread.stop_recording()
+
+    def _on_analysis(
+        self,
+        _ear_l: float,
+        _ear_r: float,
+        _ear_avg: float,
+        perclos: float,
+        status: str,
+    ) -> None:
+        self._status_panel.set_metric("perclos", f"{perclos * 100:.1f}%")
+        self._status_panel.set_status("drowsy" if status == "drowsy" else "awake")
+
+    def _on_recording_saved(self, path: str) -> None:
+        QMessageBox.information(self, "Recording saved", f"CSV saved to:\n{path}")
+
+    def _on_camera_error(self, message: str) -> None:
+        self._control_bar.set_record_enabled(False)
+        QMessageBox.critical(self, "Camera error", message)
 
     def _on_eeg_toggled(self, connected: bool) -> None:
         if connected:
