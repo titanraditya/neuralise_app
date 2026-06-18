@@ -6,12 +6,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from camera.camera_thread import CameraThread
 from core.sources.muse import MuseEEGSource
+from ui.screens.questionnaire_screen import QuestionnaireScreen
+from ui.screens.welcome_screen import WelcomeScreen
 from ui.widgets.camera_panel import CameraPanel
 from ui.widgets.control_bar import ControlBar
 from ui.widgets.eeg_panel import EEGPanel
@@ -36,19 +39,44 @@ class MainWindow(QMainWindow):
         self.resize(1200, 720)
 
         self._camera_thread: CameraThread | None = None
+
+        # Panels (shared across monitoring widget)
         self._camera_panel = CameraPanel()
         self._eeg_panel = EEGPanel()
         self._status_panel = StatusPanel()
         self._control_bar = ControlBar()
-
         self._clock_label = QLabel()
+
+        # Screens
+        self._welcome = WelcomeScreen()
+        self._questionnaire = QuestionnaireScreen()
+        self._monitoring = self._build_monitoring_widget()
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._welcome)       # 0
+        self._stack.addWidget(self._questionnaire) # 1
+        self._stack.addWidget(self._monitoring)    # 2
+
+        self.setCentralWidget(self._stack)
+
+        # Navigation
+        self._welcome.start_clicked.connect(lambda: self._stack.setCurrentIndex(1))
+        self._questionnaire.completed.connect(self._on_questionnaire_done)
+
+        self._wire_controls()
+
+    # ------------------------------------------------------------------
+    # Layout builders
+    # ------------------------------------------------------------------
+
+    def _build_monitoring_widget(self) -> QWidget:
         clock_timer = QTimer(self)
         clock_timer.timeout.connect(self._update_clock)
         clock_timer.start(1000)
         self._update_clock()
 
-        central = QWidget()
-        root = QVBoxLayout(central)
+        widget = QWidget()
+        root = QVBoxLayout(widget)
         root.addLayout(self._build_header())
 
         content = QHBoxLayout()
@@ -61,9 +89,7 @@ class MainWindow(QMainWindow):
 
         root.addLayout(content, stretch=1)
         root.addWidget(self._control_bar)
-
-        self.setCentralWidget(central)
-        self._wire_controls()
+        return widget
 
     def _build_header(self) -> QHBoxLayout:
         title_box = QVBoxLayout()
@@ -80,11 +106,27 @@ class MainWindow(QMainWindow):
         header.addWidget(self._clock_label, alignment=Qt.AlignmentFlag.AlignRight)
         return header
 
+    # ------------------------------------------------------------------
+    # Wiring
+    # ------------------------------------------------------------------
+
     def _wire_controls(self) -> None:
         self._control_bar.camera_toggled.connect(self._on_camera_toggled)
         self._control_bar.eeg_toggled.connect(self._on_eeg_toggled)
         self._control_bar.session_toggled.connect(self._on_session_toggled)
         self._control_bar.record_toggled.connect(self._on_record_toggled)
+
+    # ------------------------------------------------------------------
+    # Navigation handlers
+    # ------------------------------------------------------------------
+
+    def _on_questionnaire_done(self, _data: dict) -> None:
+        self._questionnaire.reset()
+        self._stack.setCurrentIndex(2)
+
+    # ------------------------------------------------------------------
+    # Camera handlers
+    # ------------------------------------------------------------------
 
     def _on_camera_toggled(self, connected: bool) -> None:
         if connected:
@@ -124,11 +166,15 @@ class MainWindow(QMainWindow):
         self._status_panel.set_status("drowsy" if status == "drowsy" else "awake")
 
     def _on_recording_saved(self, path: str) -> None:
-        QMessageBox.information(self, "Recording saved", f"CSV saved to:\n{path}")
+        QMessageBox.information(self, "Recording Tersimpan", f"CSV disimpan ke:\n{path}")
 
     def _on_camera_error(self, message: str) -> None:
         self._control_bar.set_record_enabled(False)
-        QMessageBox.critical(self, "Camera error", message)
+        QMessageBox.critical(self, "Camera Error", message)
+
+    # ------------------------------------------------------------------
+    # EEG handlers
+    # ------------------------------------------------------------------
 
     def _on_eeg_toggled(self, connected: bool) -> None:
         if connected:
@@ -140,7 +186,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self._eeg_panel.set_source(None)
                 self._control_bar.set_eeg_connected(False)
-                QMessageBox.critical(self, "EEG connection error", str(exc))
+                QMessageBox.critical(self, "EEG Connection Error", str(exc))
             finally:
                 QApplication.restoreOverrideCursor()
         else:
@@ -151,6 +197,10 @@ class MainWindow(QMainWindow):
             self._status_panel.start_session()
         else:
             self._status_panel.stop_session()
+
+    # ------------------------------------------------------------------
+    # Clock
+    # ------------------------------------------------------------------
 
     def _update_clock(self) -> None:
         self._clock_label.setText(QTime.currentTime().toString("hh:mm:ss"))

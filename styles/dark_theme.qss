@@ -86,3 +86,24 @@ QPushButton:checked {
     background-color: #c0392b;
     border-color: #c0392b;
 }
+
+QRadioButton {
+    spacing: 6px;
+}
+
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 2px solid #2a3340;
+    background-color: transparent;
+}
+
+QRadioButton::indicator:hover {
+    border-color: #4dd2ff;
+}
+
+QRadioButton::indicator:checked {
+    border: 2px solid #4dd2ff;
+    background-color: #4dd2ff;
+}
