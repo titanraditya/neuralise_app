@@ -1,8 +1,17 @@
 from PySide6.QtCore import QTime, Qt, QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtGui import QCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from camera.camera_thread import CameraThread
-from core.sources.mock import MockEEGSource
+from core.sources.muse import MuseEEGSource
 from ui.widgets.camera_panel import CameraPanel
 from ui.widgets.control_bar import ControlBar
 from ui.widgets.eeg_panel import EEGPanel
@@ -123,8 +132,17 @@ class MainWindow(QMainWindow):
 
     def _on_eeg_toggled(self, connected: bool) -> None:
         if connected:
-            self._eeg_panel.set_source(MockEEGSource())
-            self._eeg_panel.start()
+            source = MuseEEGSource()
+            QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+            try:
+                self._eeg_panel.set_source(source)
+                self._eeg_panel.start()
+            except Exception as exc:
+                self._eeg_panel.set_source(None)
+                self._control_bar.set_eeg_connected(False)
+                QMessageBox.critical(self, "EEG connection error", str(exc))
+            finally:
+                QApplication.restoreOverrideCursor()
         else:
             self._eeg_panel.set_source(None)
 
