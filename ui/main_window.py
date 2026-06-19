@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from camera.camera_thread import CameraThread
 from core.sources.muse import MuseEEGSource
 from ui.screens.questionnaire_screen import QuestionnaireScreen
+from ui.screens.sart_questionnaire_screen import SARTQuestionnaireScreen
 from ui.screens.welcome_screen import WelcomeScreen
 from ui.widgets.camera_panel import CameraPanel
 from ui.widgets.control_bar import ControlBar
@@ -51,17 +52,20 @@ class MainWindow(QMainWindow):
         self._welcome = WelcomeScreen()
         self._questionnaire = QuestionnaireScreen()
         self._monitoring = self._build_monitoring_widget()
+        self._sart = SARTQuestionnaireScreen()
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._welcome)       # 0
         self._stack.addWidget(self._questionnaire) # 1
         self._stack.addWidget(self._monitoring)    # 2
+        self._stack.addWidget(self._sart)          # 3
 
         self.setCentralWidget(self._stack)
 
         # Navigation
         self._welcome.start_clicked.connect(lambda: self._stack.setCurrentIndex(1))
         self._questionnaire.completed.connect(self._on_questionnaire_done)
+        self._sart.new_session_requested.connect(self._on_new_session)
 
         self._wire_controls()
 
@@ -115,6 +119,7 @@ class MainWindow(QMainWindow):
         self._control_bar.eeg_toggled.connect(self._on_eeg_toggled)
         self._control_bar.session_toggled.connect(self._on_session_toggled)
         self._control_bar.record_toggled.connect(self._on_record_toggled)
+        self._control_bar.selesai_clicked.connect(lambda: self._stack.setCurrentIndex(3))
 
     # ------------------------------------------------------------------
     # Navigation handlers
@@ -123,6 +128,10 @@ class MainWindow(QMainWindow):
     def _on_questionnaire_done(self, _data: dict) -> None:
         self._questionnaire.reset()
         self._stack.setCurrentIndex(2)
+
+    def _on_new_session(self) -> None:
+        self._sart.reset()
+        self._stack.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
     # Camera handlers

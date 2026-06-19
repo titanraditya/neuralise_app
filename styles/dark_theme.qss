@@ -87,6 +87,16 @@ QPushButton:checked {
     border-color: #c0392b;
 }
 
+#selesaiButton {
+    background-color: #1a7a3c;
+    border-color: #1a7a3c;
+    font-weight: 600;
+}
+
+#selesaiButton:hover {
+    background-color: #21944a;
+}
+
 QRadioButton {
     spacing: 6px;
 }

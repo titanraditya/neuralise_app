@@ -7,6 +7,7 @@ class ControlBar(QWidget):
     eeg_toggled = Signal(bool)
     session_toggled = Signal(bool)
     record_toggled = Signal(bool)
+    selesai_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -24,6 +25,10 @@ class ControlBar(QWidget):
         self._record_btn.setEnabled(False)
         self._record_btn.toggled.connect(self._on_record_toggled)
 
+        self._selesai_btn = QPushButton("Selesai")
+        self._selesai_btn.setObjectName("selesaiButton")
+        self._selesai_btn.clicked.connect(self.selesai_clicked)
+
         self._session_btn = QPushButton("Start Monitoring")
         self._session_btn.setObjectName("primaryButton")
         self._session_btn.setCheckable(True)
@@ -35,6 +40,7 @@ class ControlBar(QWidget):
         layout.addWidget(self._record_btn)
         layout.addStretch(1)
         layout.addWidget(self._session_btn)
+        layout.addWidget(self._selesai_btn)
 
     def set_record_enabled(self, enabled: bool) -> None:
         self._record_btn.setEnabled(enabled)
