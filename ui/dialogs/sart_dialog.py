@@ -1,16 +1,15 @@
 import datetime
 import json
-from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -18,6 +17,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from core.session import Session
+from ui.effects import apply_card_shadow
 
 QUESTIONS: list[tuple[int, str, str]] = [
     (1, "Bagaimana perubahan situasi saat Anda mengerjakan test dengan paparan kebisingan? "
@@ -51,21 +53,28 @@ QUESTIONS: list[tuple[int, str, str]] = [
 ]
 
 
-class SARTQuestionnaireScreen(QWidget):
-    completed = Signal(dict)
-    new_session_requested = Signal()
+class SARTDialog(QDialog):
+    """Modal, fully optional SART questionnaire attached to one Session.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    Writes recordings/<session_id>/sart.json and flips Session.has_sart.
+    """
+
+    def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._session = session
+        self.setWindowTitle(f"Kuesioner SART — {session.session_id}")
         self._groups: list[QButtonGroup] = []
         self._build_ui()
+        self._load_existing()
 
     def _build_ui(self) -> None:
+        self.setMinimumSize(720, 560)
+
         header = QLabel("Kuesioner SART")
         header.setObjectName("appTitle")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        sub = QLabel("Situation Awareness Rating Technique")
+        sub = QLabel("Situation Awareness Rating Technique — opsional, terikat ke sesi ini")
         sub.setObjectName("appSubtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -78,10 +87,13 @@ class SARTQuestionnaireScreen(QWidget):
 
         id_box = QGroupBox("Data Responden")
         id_form = QFormLayout(id_box)
-        self._nama = QLineEdit()
-        self._level_noise = QLineEdit()
-        id_form.addRow("Nama:", self._nama)
-        id_form.addRow("Level Noise:", self._level_noise)
+        # Nama is one-per-Session (satu sesi = satu responden) — edit it via Subject Code on
+        # the session control strip, not here.
+        self._nama_label = QLabel(
+            self._session.subject_code or "(kosong — isi di Subject Code pada sesi)"
+        )
+        id_form.addRow("Nama:", self._nama_label)
+        apply_card_shadow(id_box)
         cl.addWidget(id_box)
 
         instr = QLabel(
@@ -115,21 +127,23 @@ class SARTQuestionnaireScreen(QWidget):
                 group.addButton(rb, val)
                 q_grid.addWidget(rb, row, 1 + val, Qt.AlignmentFlag.AlignCenter)
 
+        apply_card_shadow(q_box)
         cl.addWidget(q_box)
 
-        btn_layout = QHBoxLayout()
+        self._close_btn = QPushButton("Tutup")
+        self._close_btn.setObjectName("ghostButton")
+        self._close_btn.setFixedWidth(160)
+        self._close_btn.clicked.connect(self.reject)
+
         self._submit_btn = QPushButton("Simpan")
         self._submit_btn.setObjectName("primaryButton")
         self._submit_btn.setFixedWidth(160)
         self._submit_btn.clicked.connect(self._on_submit)
 
-        self._new_session_btn = QPushButton("Mulai Sesi Baru")
-        self._new_session_btn.setFixedWidth(160)
-        self._new_session_btn.clicked.connect(self.new_session_requested.emit)
-
+        btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+        btn_layout.addWidget(self._close_btn)
         btn_layout.addWidget(self._submit_btn)
-        btn_layout.addWidget(self._new_session_btn)
         btn_layout.addStretch()
         cl.addLayout(btn_layout)
         cl.addSpacing(16)
@@ -142,21 +156,24 @@ class SARTQuestionnaireScreen(QWidget):
         outer.addSpacing(8)
         outer.addWidget(scroll, stretch=1)
 
-    def reset(self) -> None:
-        self._nama.clear()
-        self._level_noise.clear()
-        for group in self._groups:
-            checked = group.checkedButton()
-            if checked:
-                group.setExclusive(False)
-                checked.setChecked(False)
-                group.setExclusive(True)
-
-    def _on_submit(self) -> None:
-        if not self._nama.text().strip():
-            QMessageBox.warning(self, "Validasi", "Nama tidak boleh kosong.")
+    def _load_existing(self) -> None:
+        path = self._session.sart_path
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
             return
 
+        answers = data.get("answers", {})
+        for i, group in enumerate(self._groups, start=1):
+            val = answers.get(str(i))
+            if val is not None:
+                button = group.button(int(val))
+                if button is not None:
+                    button.setChecked(True)
+
+    def _on_submit(self) -> None:
         answers: dict[int, int] = {}
         for i, group in enumerate(self._groups, start=1):
             if group.checkedId() == -1:
@@ -166,16 +183,14 @@ class SARTQuestionnaireScreen(QWidget):
 
         data = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "nama": self._nama.text().strip(),
-            "level_noise": self._level_noise.text().strip(),
+            "session_id": self._session.session_id,
+            "nama": self._session.subject_code,
             "answers": {str(k): v for k, v in answers.items()},
         }
 
-        Path("recordings").mkdir(exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = Path("recordings") / f"sart_{ts}.json"
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._session.sart_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        self._session.has_sart = True
+        self._session.write_meta()
 
-        QMessageBox.information(self, "Tersimpan", f"Hasil SART disimpan ke:\n{out}")
-        self.completed.emit(data)
+        QMessageBox.information(self, "Tersimpan", f"Hasil SART disimpan ke:\n{self._session.sart_path}")
+        self.accept()

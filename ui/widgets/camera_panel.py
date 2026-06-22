@@ -1,64 +1,56 @@
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from core.sources.base import CameraSource
-
-REFRESH_MS = 33  # ~30 fps
+from ui.effects import apply_card_shadow
 
 
 class CameraPanel(QWidget):
-    """Displays frames pulled from a CameraSource. Swap the source later for a real webcam feed."""
+    """Renders frames pushed in via update_frame(); DeviceManager owns the actual camera feed."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._source: CameraSource | None = None
+        self._active = False
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._view = QLabel("No camera connected")
         self._view.setObjectName("cameraView")
         self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._view.setMinimumSize(480, 360)
+        self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        apply_card_shadow(self._view)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._view)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._refresh)
+    def set_active(self, active: bool) -> None:
+        """Marks the externally-driven feed (DeviceManager) as live or stopped.
 
-    def set_source(self, source: CameraSource | None) -> None:
-        self.stop()
-        self._source = source
-
-    def start(self) -> None:
-        if self._source is None:
-            return
-        self._source.start()
-        self._timer.start(REFRESH_MS)
-
-    def stop(self) -> None:
-        self._timer.stop()
-        if self._source is not None:
-            self._source.stop()
-        self._view.setText("No camera connected")
-        self._view.setPixmap(QPixmap())
+        Frames delivered via update_frame() while inactive are ignored — this guards
+        against a straggler frame_ready signal arriving after the producer thread has
+        already been told to stop but before its last queued emit is processed.
+        """
+        self._active = active
 
     def update_frame(self, frame) -> None:
-        self._view.setPixmap(self._frame_to_pixmap(frame))
+        if not self._active:
+            return
+        self._set_frame(frame)
 
     def clear(self) -> None:
-        self._timer.stop()
+        self._active = False
         self._view.setPixmap(QPixmap())
         self._view.setText("No camera connected")
 
-    def _refresh(self) -> None:
-        if self._source is None:
-            return
-        frame = self._source.get_frame()
-        if frame is None:
-            return
-        self._view.setPixmap(self._frame_to_pixmap(frame))
+    def _set_frame(self, frame) -> None:
+        pixmap = self._frame_to_pixmap(frame).scaled(
+            self._view.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._view.setPixmap(pixmap)
 
     @staticmethod
     def _frame_to_pixmap(frame: np.ndarray) -> QPixmap:

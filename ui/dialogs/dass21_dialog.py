@@ -1,14 +1,15 @@
 import datetime
 import json
-from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -19,7 +20,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# (nomor, teks pertanyaan, subscale: D/A/S)
+from core.session import Session
+from ui.effects import apply_card_shadow
+
+# (nomor, teks pertanyaan, subscale: D/A/S) — scoring preserved verbatim from the old wizard step.
 QUESTIONS: list[tuple[int, str, str]] = [
     (1,  "Saya merasa bahwa diri saya menjadi marah karena hal-hal sepele.", "S"),
     (2,  "Saya merasa mulut saya sering kering.", "A"),
@@ -64,24 +68,32 @@ def _get_level(score: int, subscale: str) -> str:
     return "Sangat Berat"
 
 
-class QuestionnaireScreen(QWidget):
-    completed = Signal(dict)
+class DASS21Dialog(QDialog):
+    """Modal, fully optional DASS-21 questionnaire attached to one Session.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    Writes recordings/<session_id>/dass21.json and flips Session.has_dass21 — it no longer
+    gates progress through a wizard, so an out-of-range result is informational only.
+    """
+
+    def __init__(self, session: Session, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._session = session
+        self.setWindowTitle(f"Kuesioner DASS-21 — {session.session_id}")
         self._groups: list[QButtonGroup] = []
         self._build_ui()
+        self._load_existing()
 
     def _build_ui(self) -> None:
+        self.setMinimumSize(720, 600)
+
         header = QLabel("Kuesioner DASS-21")
         header.setObjectName("appTitle")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        sub = QLabel("Depression Anxiety Stress Scale")
+        sub = QLabel("Depression Anxiety Stress Scale — opsional, terikat ke sesi ini")
         sub.setObjectName("appSubtitle")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # --- scroll area ---
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
 
@@ -89,25 +101,26 @@ class QuestionnaireScreen(QWidget):
         cl = QVBoxLayout(content)
         cl.setSpacing(16)
 
-        # Identity fields
         id_box = QGroupBox("Data Responden")
         id_form = QFormLayout(id_box)
 
-        self._nama = QLineEdit()
+        # Nama is one-per-Session (satu sesi = satu responden), not re-entered per questionnaire —
+        # the only place to set/edit it is the Subject Code field on the session control strip.
+        self._nama_label = QLabel(
+            self._session.subject_code or "(kosong — isi di Subject Code pada sesi)"
+        )
         self._usia = QLineEdit()
         self._kelamin = QComboBox()
         self._kelamin.addItems(["Laki-laki", "Perempuan"])
-        self._level_noise = QLineEdit()
         self._content_noise = QLineEdit()
 
-        id_form.addRow("Nama:", self._nama)
+        id_form.addRow("Nama:", self._nama_label)
         id_form.addRow("Usia:", self._usia)
         id_form.addRow("Jenis Kelamin:", self._kelamin)
-        id_form.addRow("Level Noise:", self._level_noise)
         id_form.addRow("Content Noise:", self._content_noise)
+        apply_card_shadow(id_box)
         cl.addWidget(id_box)
 
-        # Instructions
         instr = QLabel(
             "Petunjuk: Pilih angka yang paling sesuai dengan pengalaman Anda selama satu minggu belakangan ini.\n"
             "0 = Tidak sesuai sama sekali  |  1 = Kadang-kadang  |  2 = Lumayan sering  |  3 = Sering sekali"
@@ -115,7 +128,6 @@ class QuestionnaireScreen(QWidget):
         instr.setWordWrap(True)
         cl.addWidget(instr)
 
-        # Questions grid
         q_box = QGroupBox("Pertanyaan")
         q_grid = QGridLayout(q_box)
         q_grid.setColumnStretch(1, 1)
@@ -140,13 +152,25 @@ class QuestionnaireScreen(QWidget):
                 group.addButton(rb, val)
                 q_grid.addWidget(rb, row, 2 + val, Qt.AlignmentFlag.AlignCenter)
 
+        apply_card_shadow(q_box)
         cl.addWidget(q_box)
 
-        self._submit_btn = QPushButton("Selesai")
+        self._close_btn = QPushButton("Tutup")
+        self._close_btn.setObjectName("ghostButton")
+        self._close_btn.setFixedWidth(160)
+        self._close_btn.clicked.connect(self.reject)
+
+        self._submit_btn = QPushButton("Simpan")
         self._submit_btn.setObjectName("primaryButton")
         self._submit_btn.setFixedWidth(200)
         self._submit_btn.clicked.connect(self._on_submit)
-        cl.addWidget(self._submit_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(self._close_btn)
+        btn_layout.addWidget(self._submit_btn)
+        btn_layout.addStretch()
+        cl.addLayout(btn_layout)
         cl.addSpacing(16)
 
         scroll.setWidget(content)
@@ -157,29 +181,34 @@ class QuestionnaireScreen(QWidget):
         outer.addSpacing(8)
         outer.addWidget(scroll, stretch=1)
 
-    def reset(self) -> None:
-        self._nama.clear()
-        self._usia.clear()
-        self._kelamin.setCurrentIndex(0)
-        self._level_noise.clear()
-        self._content_noise.clear()
-        for group in self._groups:
-            checked = group.checkedButton()
-            if checked:
-                group.setExclusive(False)
-                checked.setChecked(False)
-                group.setExclusive(True)
+    def _load_existing(self) -> None:
+        path = self._session.dass21_path
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return
+
+        self._usia.setText(data.get("usia", ""))
+        idx = self._kelamin.findText(data.get("jenis_kelamin", ""))
+        if idx >= 0:
+            self._kelamin.setCurrentIndex(idx)
+        self._content_noise.setText(data.get("content_noise", ""))
+
+        answers = data.get("answers", {})
+        for i, group in enumerate(self._groups, start=1):
+            val = answers.get(str(i))
+            if val is not None:
+                button = group.button(int(val))
+                if button is not None:
+                    button.setChecked(True)
 
     def _on_submit(self) -> None:
-        # Validate identity
-        if not self._nama.text().strip():
-            QMessageBox.warning(self, "Validasi", "Nama tidak boleh kosong.")
-            return
         if not self._usia.text().strip():
             QMessageBox.warning(self, "Validasi", "Usia tidak boleh kosong.")
             return
 
-        # Validate all questions answered
         answers: dict[int, int] = {}
         for i, group in enumerate(self._groups, start=1):
             if group.checkedId() == -1:
@@ -187,7 +216,6 @@ class QuestionnaireScreen(QWidget):
                 return
             answers[i] = group.checkedId()
 
-        # Calculate scores
         scores = {k: sum(answers[q] for q in items) for k, items in SUBSCALE_ITEMS.items()}
         levels = {k: _get_level(v, k) for k, v in scores.items()}
         all_normal = all(v == "Normal" for v in levels.values())
@@ -196,34 +224,29 @@ class QuestionnaireScreen(QWidget):
             f"Hasil DASS-21:\n\n"
             f"  Depresi   : {scores['D']} → {levels['D']}\n"
             f"  Kecemasan : {scores['A']} → {levels['A']}\n"
-            f"  Stres     : {scores['S']} → {levels['S']}\n"
+            f"  Stres     : {scores['S']} → {levels['S']}\n\n"
         )
-
-        if not all_normal:
-            result_text += "\nSubjek tidak memenuhi kriteria inklusi.\nSemua dimensi harus berada di level Normal."
-            QMessageBox.warning(self, "Hasil Kuesioner", result_text)
-            return
-
-        result_text += "\nSubjek memenuhi kriteria inklusi. Silakan lanjutkan sesi."
+        result_text += (
+            "Subjek memenuhi kriteria inklusi (semua Normal)."
+            if all_normal
+            else "Subjek TIDAK memenuhi kriteria inklusi screening — tetap disimpan sebagai data opsional."
+        )
         QMessageBox.information(self, "Hasil Kuesioner", result_text)
 
         data = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "nama": self._nama.text().strip(),
+            "session_id": self._session.session_id,
+            "nama": self._session.subject_code,
             "usia": self._usia.text().strip(),
             "jenis_kelamin": self._kelamin.currentText(),
-            "level_noise": self._level_noise.text().strip(),
             "content_noise": self._content_noise.text().strip(),
             "answers": {str(k): v for k, v in answers.items()},
             "scores": scores,
             "levels": levels,
         }
 
-        # Save alongside recordings
-        Path("recordings").mkdir(exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = Path("recordings") / f"questionnaire_{ts}.json"
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._session.dass21_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        self._session.has_dass21 = True
+        self._session.write_meta()
 
-        self.completed.emit(data)
+        self.accept()

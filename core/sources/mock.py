@@ -5,6 +5,14 @@ import numpy as np
 from core.sources.base import CameraSource, EEGSource
 
 
+# Drowsy stretch repeats every CYCLE_SECONDS, lasting DROWSY_SECONDS — long enough to push
+# the 30s PERCLOS window above its 15% threshold so the "drowsy" status is exercised too.
+CYCLE_SECONDS = 45.0
+DROWSY_SECONDS = 5.0
+NORMAL_EAR = 0.32
+DROWSY_EAR = 0.15
+
+
 class MockCameraSource(CameraSource):
     """Generates a synthetic animated frame so the camera panel has something to render."""
 
@@ -13,6 +21,7 @@ class MockCameraSource(CameraSource):
         self._height = height
         self._running = False
         self._t0 = 0.0
+        self._rng = np.random.default_rng()
 
     def start(self) -> None:
         self._running = True
@@ -37,6 +46,20 @@ class MockCameraSource(CameraSource):
         frame[..., 1] = (pulse * 160).astype(np.uint8)
         frame[..., 2] = (pulse * 220).astype(np.uint8)
         return frame
+
+    def get_ear(self) -> tuple[float, float, float] | None:
+        """Synthetic eye-aspect-ratio reading standing in for EyeDetector's MediaPipe output."""
+        if not self._running:
+            return None
+
+        t = time.time() - self._t0
+        in_drowsy_stretch = (t % CYCLE_SECONDS) > (CYCLE_SECONDS - DROWSY_SECONDS)
+        base = DROWSY_EAR if in_drowsy_stretch else NORMAL_EAR
+
+        ear_left = max(0.02, base + self._rng.normal(0, 0.015))
+        ear_right = max(0.02, base + self._rng.normal(0, 0.015))
+        ear_avg = (ear_left + ear_right) / 2.0
+        return ear_left, ear_right, ear_avg
 
 
 class MockEEGSource(EEGSource):
@@ -88,3 +111,24 @@ class MockEEGSource(EEGSource):
             samples[ch] = alpha + theta + noise
 
         return samples
+
+    def band_powers(self, segments: np.ndarray, good_channels: list[int]) -> list[float] | None:
+        """Synthetic [delta, theta, alpha, beta, gamma], with theta+alpha spiking on the same
+        drowsy-stretch cycle as MockCameraSource so the EEG ratio detector has something to catch."""
+        if not good_channels:
+            return None
+
+        t = time.time() - self._t0
+        in_drowsy_stretch = (t % CYCLE_SECONDS) > (CYCLE_SECONDS - DROWSY_SECONDS)
+
+        delta = float(self._rng.uniform(0.5, 1.5))
+        beta = float(self._rng.uniform(0.8, 1.5))
+        gamma = float(self._rng.uniform(0.1, 0.4))
+        if in_drowsy_stretch:
+            theta = float(self._rng.uniform(1.5, 2.5))
+            alpha = float(self._rng.uniform(1.5, 2.5))
+        else:
+            theta = float(self._rng.uniform(0.3, 0.8))
+            alpha = float(self._rng.uniform(0.3, 0.8))
+
+        return [delta, theta, alpha, beta, gamma]

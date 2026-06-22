@@ -9,10 +9,14 @@ class SessionRecorder:
         self._writer = None
         self._path: Path | None = None
 
-    def start(self, output_dir: str = "recordings") -> Path:
-        Path(output_dir).mkdir(exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._path = Path(output_dir) / f"session_{ts}.csv"
+    def start(self, path: str | Path | None = None, output_dir: str = "recordings") -> Path:
+        if path is not None:
+            self._path = Path(path)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            Path(output_dir).mkdir(exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._path = Path(output_dir) / f"session_{ts}.csv"
         self._file = open(self._path, "w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
         self._writer.writerow(["timestamp", "ear_left", "ear_right", "ear_avg", "perclos", "status"])

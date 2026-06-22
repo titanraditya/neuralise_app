@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QThread, Signal
@@ -6,6 +7,7 @@ from PySide6.QtCore import QThread, Signal
 from camera.detector import EyeDetector
 from camera.perclos import PerclosCalculator
 from camera.recorder import SessionRecorder
+from core.sources.mock import MockCameraSource
 
 
 class CameraThread(QThread):
@@ -14,10 +16,11 @@ class CameraThread(QThread):
     recording_saved = Signal(str)                             # saved CSV path
     camera_error = Signal(str)                                # error message
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, use_mock: bool = False) -> None:
         super().__init__(parent)
         self._running = False
         self._recording = False
+        self._use_mock = use_mock
         self._perclos = PerclosCalculator()
         self._recorder = SessionRecorder()
 
@@ -31,9 +34,9 @@ class CameraThread(QThread):
             self.stop_recording()
         self.wait()
 
-    def start_recording(self) -> None:
+    def start_recording(self, path: str | Path | None = None) -> None:
         self._perclos.reset()
-        self._recorder.start()
+        self._recorder.start(path)
         self._recording = True
 
     def stop_recording(self) -> None:
@@ -43,6 +46,12 @@ class CameraThread(QThread):
             self.recording_saved.emit(str(path))
 
     def run(self) -> None:
+        if self._use_mock:
+            self._run_mock()
+        else:
+            self._run_camera()
+
+    def _run_camera(self) -> None:
         detector = EyeDetector()
 
         # On Windows, DirectShow backend is more reliable than the default MSMF
@@ -68,22 +77,42 @@ class CameraThread(QThread):
 
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 annotated, ear_left, ear_right, ear_avg = detector.process(frame_rgb)
-
-                perclos = self._perclos.update(ear_avg)
-                status = "drowsy" if self._perclos.is_drowsy(perclos) else "normal"
-
-                self.frame_ready.emit(annotated)
-                self.analysis_ready.emit(
-                    ear_left or 0.0,
-                    ear_right or 0.0,
-                    ear_avg or 0.0,
-                    perclos,
-                    status,
-                )
-
-                if self._recording and ear_avg is not None:
-                    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    self._recorder.write_row(ts, ear_left, ear_right, ear_avg, perclos, status)
+                self._emit_analysis(annotated, ear_left, ear_right, ear_avg)
         finally:
             cap.release()
             detector.close()
+
+    def _run_mock(self) -> None:
+        source = MockCameraSource()
+        source.start()
+        try:
+            while self._running:
+                frame = source.get_frame()
+                ear_left, ear_right, ear_avg = source.get_ear()
+                self._emit_analysis(frame, ear_left, ear_right, ear_avg)
+                self.msleep(33)  # ~30 fps, matches the real camera loop's pace
+        finally:
+            source.stop()
+
+    def _emit_analysis(
+        self,
+        frame,
+        ear_left: float | None,
+        ear_right: float | None,
+        ear_avg: float | None,
+    ) -> None:
+        perclos = self._perclos.update(ear_avg)
+        status = "drowsy" if self._perclos.is_drowsy(perclos) else "normal"
+
+        self.frame_ready.emit(frame)
+        self.analysis_ready.emit(
+            ear_left or 0.0,
+            ear_right or 0.0,
+            ear_avg or 0.0,
+            perclos,
+            status,
+        )
+
+        if self._recording and ear_avg is not None:
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self._recorder.write_row(ts, ear_left, ear_right, ear_avg, perclos, status)
