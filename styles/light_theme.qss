@@ -277,6 +277,22 @@ QPushButton:checked {
     border-color: #1b8a4a;
 }
 
+#dangerButton {
+    color: #d6453d;
+    border-color: #e3bdb9;
+}
+
+#dangerButton:hover {
+    background-color: #fbecea;
+    border-color: #d6453d;
+}
+
+#dangerButton:disabled {
+    color: #aab2c0;
+    background-color: #f2f4f8;
+    border-color: #e3e8ef;
+}
+
 #ghostButton {
     background-color: transparent;
     border: 1px solid transparent;

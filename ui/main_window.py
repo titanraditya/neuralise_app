@@ -202,6 +202,7 @@ class MainWindow(QMainWindow):
         drawer.close_clicked.connect(lambda: drawer.setVisible(False))
         drawer.dass21_requested.connect(self._on_dass21_from_history)
         drawer.sart_requested.connect(self._on_sart_from_history)
+        drawer.delete_requested.connect(self._on_session_delete_requested)
 
     def _on_history_toggle(self) -> None:
         drawer = self._screen.history_drawer
@@ -215,6 +216,22 @@ class MainWindow(QMainWindow):
 
     def _on_sart_from_history(self, session_dir) -> None:
         self._open_sart(self._resolve_session(Path(session_dir)))
+
+    def _on_session_delete_requested(self, session_dir) -> None:
+        session_dir = Path(session_dir)
+        if self._session is not None and self._session.dir == session_dir:
+            QMessageBox.warning(
+                self,
+                "Sesi masih aktif",
+                "Sesi ini masih aktif — klik \"Selesai\" dulu sebelum menghapusnya.",
+            )
+            return
+        try:
+            Session.load(session_dir).delete()
+        except OSError as exc:
+            QMessageBox.critical(self, "Gagal Menghapus", f"Tidak bisa menghapus sesi:\n{exc}")
+            return
+        self._screen.history_drawer.refresh()
 
     def _resolve_session(self, session_dir: Path) -> Session:
         """Reuse the live, in-memory Session if it's the one being requested — otherwise a

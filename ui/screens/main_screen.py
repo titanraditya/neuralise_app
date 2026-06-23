@@ -54,7 +54,7 @@ class MainScreen(QWidget):
 
         self.history_drawer = HistoryDrawer()
         apply_card_shadow(self.history_drawer)
-        self.history_drawer.setVisible(False)
+        self.history_drawer.setVisible(True)
 
         self._clock_label = QLabel()
         self._clock_label.setObjectName("clockLabel")

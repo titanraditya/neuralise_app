@@ -71,6 +71,7 @@ class HistoryDrawer(QWidget):
     close_clicked = Signal()
     dass21_requested = Signal(object)  # Path to the session's folder
     sart_requested = Signal(object)  # Path to the session's folder
+    delete_requested = Signal(object)  # Path to the session's folder, already user-confirmed
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,9 +109,15 @@ class HistoryDrawer(QWidget):
         btn_row.addWidget(self._sart_btn)
         summary_layout.addLayout(btn_row)
 
+        btn_row2 = QHBoxLayout()
         self._export_btn = QPushButton("Export (.zip)")
         self._export_btn.clicked.connect(self._on_export_clicked)
-        summary_layout.addWidget(self._export_btn)
+        self._delete_btn = QPushButton("Hapus Sesi")
+        self._delete_btn.setObjectName("dangerButton")
+        self._delete_btn.clicked.connect(self._on_delete_clicked)
+        btn_row2.addWidget(self._export_btn)
+        btn_row2.addWidget(self._delete_btn)
+        summary_layout.addLayout(btn_row2)
         self._set_summary_enabled(False)
 
         layout = QVBoxLayout(self)
@@ -175,6 +182,7 @@ class HistoryDrawer(QWidget):
         self._dass21_btn.setEnabled(enabled)
         self._sart_btn.setEnabled(enabled)
         self._export_btn.setEnabled(enabled)
+        self._delete_btn.setEnabled(enabled)
 
     def _on_dass21_clicked(self) -> None:
         session = self._selected_session()
@@ -185,6 +193,22 @@ class HistoryDrawer(QWidget):
         session = self._selected_session()
         if session is not None:
             self.sart_requested.emit(session.dir)
+
+    def _on_delete_clicked(self) -> None:
+        session = self._selected_session()
+        if session is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Hapus Sesi",
+            f"Hapus sesi {session.session_id} beserta semua data (kamera, EEG, kuesioner)?\n"
+            "Tindakan ini tidak bisa dibatalkan.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.delete_requested.emit(session.dir)
 
     def _on_export_clicked(self) -> None:
         session = self._selected_session()

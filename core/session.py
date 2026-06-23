@@ -1,5 +1,6 @@
 import datetime
 import json
+import shutil
 from pathlib import Path
 
 RECORDINGS_DIR = Path("recordings")
@@ -108,3 +109,8 @@ class Session:
     def end(self) -> None:
         self.ended_at = datetime.datetime.now().isoformat(timespec="seconds")
         self.write_meta()
+
+    def delete(self) -> None:
+        """Permanently remove recordings/<session_id>/ and everything in it. Irreversible —
+        callers are responsible for confirming with the user first."""
+        shutil.rmtree(self.dir)
