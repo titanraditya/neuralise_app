@@ -1,4 +1,5 @@
 import csv
+import time
 from pathlib import Path
 
 
@@ -12,15 +13,20 @@ class EEGRecorder:
         self._file = None
         self._writer = None
         self._path: Path | None = None
+        self._start_time: float | None = None
 
     def start(self, path: str | Path) -> Path:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self._path, "w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
+        # New columns appended at the end, after the original 8 — same backward-compat
+        # rationale as camera/recorder.py.
         self._writer.writerow(
-            ["timestamp", "delta", "theta", "alpha", "beta", "gamma", "ratio_theta_alpha_beta", "status"]
+            ["timestamp", "delta", "theta", "alpha", "beta", "gamma", "ratio_theta_alpha_beta", "status",
+             "t_rel", "contact_ok"]
         )
+        self._start_time = time.monotonic()
         return self._path
 
     def write_row(
@@ -29,10 +35,12 @@ class EEGRecorder:
         bands: list[float],
         ratio: float,
         status: str,
+        contact_ok: bool = True,
     ) -> None:
         if self._writer is None:
             return
         delta, theta, alpha, beta, gamma = bands
+        t_rel = time.monotonic() - self._start_time if self._start_time is not None else 0.0
         self._writer.writerow([
             timestamp,
             f"{delta:.4f}",
@@ -42,6 +50,8 @@ class EEGRecorder:
             f"{gamma:.4f}",
             f"{ratio:.4f}",
             status,
+            f"{t_rel:.3f}",
+            "true" if contact_ok else "false",
         ])
 
     def stop(self) -> Path | None:

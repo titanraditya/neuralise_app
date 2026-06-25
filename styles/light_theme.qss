@@ -71,7 +71,7 @@ QToolTip {
     background-color: #ffffff;
     border: 1px solid #e3e8ef;
     border-radius: 14px;
-    padding: 10px;
+    padding: 6px;
 }
 
 #metricValue {
@@ -89,6 +89,26 @@ QToolTip {
     background-color: #ffffff;
     border: 1px solid #e3e8ef;
     border-radius: 16px;
+}
+
+#historyList {
+    border: none;
+    background: transparent;
+}
+
+#historyList::item {
+    background-color: #f7f9fc;
+    border: 1px solid #e3e8ef;
+    border-radius: 12px;
+}
+
+#historyList::item:hover {
+    border-color: #c4ccdb;
+}
+
+#historyList::item:selected {
+    background-color: #eaf1ff;
+    border: 1px solid #2f6fed;
 }
 
 QGroupBox {

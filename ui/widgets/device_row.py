@@ -35,7 +35,7 @@ class DeviceRow(QWidget):
         self._eeg_contact_label.setObjectName("contactLabel")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(14, 6, 14, 6)
         layout.setSpacing(10)
         layout.addWidget(self._camera_btn)
         layout.addWidget(self._eeg_btn)

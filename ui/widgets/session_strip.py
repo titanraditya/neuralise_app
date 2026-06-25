@@ -22,14 +22,13 @@ class SessionControlStrip(QWidget):
     """Bottom control strip — swaps content per mode, but the recording badge is always visible.
 
     Mode SIAP: just the "Sesi Baru" button.
-    Mode SESI AKTIF: session_id + editable subject_code/noise_condition + Rekam + Selesai.
+    Mode SESI AKTIF: session_id + editable subject_code (nama) + Rekam + Selesai.
     """
 
     new_session_clicked = Signal()
     record_toggled = Signal(bool)
     selesai_clicked = Signal()
     subject_code_changed = Signal(str)
-    noise_condition_changed = Signal(str)
     dass21_clicked = Signal()
     sart_clicked = Signal()
 
@@ -53,15 +52,9 @@ class SessionControlStrip(QWidget):
         self._session_id_label.setStyleSheet("font-weight: 700;")
 
         self._subject_edit = QLineEdit()
-        self._subject_edit.setPlaceholderText("Subject code (opsional)")
+        self._subject_edit.setPlaceholderText("Nama (opsional)")
         self._subject_edit.editingFinished.connect(
             lambda: self.subject_code_changed.emit(self._subject_edit.text())
-        )
-
-        self._noise_edit = QLineEdit()
-        self._noise_edit.setPlaceholderText("Noise condition (opsional)")
-        self._noise_edit.editingFinished.connect(
-            lambda: self.noise_condition_changed.emit(self._noise_edit.text())
         )
 
         self._dass21_btn = QPushButton("DASS-21")
@@ -85,7 +78,6 @@ class SessionControlStrip(QWidget):
         aktif_layout.setSpacing(10)
         aktif_layout.addWidget(self._session_id_label)
         aktif_layout.addWidget(self._subject_edit)
-        aktif_layout.addWidget(self._noise_edit)
         aktif_layout.addStretch(1)
         aktif_layout.addWidget(self._dass21_btn)
         aktif_layout.addWidget(self._sart_btn)
@@ -100,7 +92,7 @@ class SessionControlStrip(QWidget):
         self._set_badge(False)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(14)
         layout.addWidget(self._mode_stack, stretch=1)
         layout.addWidget(self._recording_badge)
@@ -117,9 +109,6 @@ class SessionControlStrip(QWidget):
 
     def set_subject_code(self, text: str) -> None:
         self._subject_edit.setText(text)
-
-    def set_noise_condition(self, text: str) -> None:
-        self._noise_edit.setText(text)
 
     def set_recording(self, recording: bool) -> None:
         self._record_btn.blockSignals(True)

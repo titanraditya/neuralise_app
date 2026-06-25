@@ -123,6 +123,12 @@ class _EEGWorker(QThread):
     def _emit_bands(self, buffers: list[np.ndarray], contact_ok: list[bool]) -> None:
         good_idx = [i for i, ok in enumerate(contact_ok) if ok]
         if not good_idx:
+            # No channel has usable contact, so band powers can't be computed at all — still
+            # record a marker row (contact_ok=False) instead of silently leaving a gap, so an
+            # offline reader can tell "no contact" apart from "no row written yet".
+            if self._recording and self._recorder is not None:
+                ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self._recorder.write_row(ts, [0.0, 0.0, 0.0, 0.0, 0.0], 0.0, "no_contact", contact_ok=False)
             return
 
         bands = self._source.band_powers(np.vstack(buffers), good_idx)
@@ -143,7 +149,7 @@ class _EEGWorker(QThread):
 
         if self._recording and self._recorder is not None:
             ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self._recorder.write_row(ts, bands, ratio, status)
+            self._recorder.write_row(ts, bands, ratio, status, contact_ok=True)
 
 
 class DeviceManager(QObject):

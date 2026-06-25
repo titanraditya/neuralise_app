@@ -110,6 +110,18 @@ class Session:
         self.ended_at = datetime.datetime.now().isoformat(timespec="seconds")
         self.write_meta()
 
+    def duration_str(self) -> str | None:
+        """HH:MM:SS between started_at and ended_at — None while the session is still active
+        (ended_at not set yet)."""
+        if not self.ended_at:
+            return None
+        start = datetime.datetime.fromisoformat(self.started_at)
+        end = datetime.datetime.fromisoformat(self.ended_at)
+        total_seconds = max(int((end - start).total_seconds()), 0)
+        h, rem = divmod(total_seconds, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+
     def delete(self) -> None:
         """Permanently remove recordings/<session_id>/ and everything in it. Irreversible —
         callers are responsible for confirming with the user first."""

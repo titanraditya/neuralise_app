@@ -1,9 +1,8 @@
-from PySide6.QtCore import QTime, Qt, QTimer, Signal
+from PySide6.QtCore import QTime, Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -22,7 +21,7 @@ def _section(label: str, widget: QWidget) -> QWidget:
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
+    layout.setSpacing(4)
     caption = QLabel(label)
     caption.setObjectName("sectionLabel")
     layout.addWidget(caption)
@@ -36,8 +35,6 @@ class MainScreen(QWidget):
     Pure composition + child widgets exposed as public attributes; DeviceManager/Session
     lifecycle and signal wiring live in MainWindow.
     """
-
-    history_toggle_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -54,7 +51,6 @@ class MainScreen(QWidget):
 
         self.history_drawer = HistoryDrawer()
         apply_card_shadow(self.history_drawer)
-        self.history_drawer.setVisible(True)
 
         self._clock_label = QLabel()
         self._clock_label.setObjectName("clockLabel")
@@ -65,16 +61,16 @@ class MainScreen(QWidget):
 
         main_column = QVBoxLayout()
         main_column.setContentsMargins(0, 0, 0, 0)
-        main_column.setSpacing(14)
+        main_column.setSpacing(8)
         main_column.addWidget(self._build_header())
         main_column.addWidget(self.device_row)
 
         content = QHBoxLayout()
-        content.setSpacing(16)
+        content.setSpacing(12)
         content.addWidget(_section("Camera", self.camera_panel), stretch=3)
 
         right_column = QVBoxLayout()
-        right_column.setSpacing(16)
+        right_column.setSpacing(10)
         right_column.addWidget(_section("EEG Signal", self.eeg_panel), stretch=2)
         right_column.addWidget(_section("Status", self.status_panel), stretch=1)
         content.addLayout(right_column, stretch=2)
@@ -93,7 +89,7 @@ class MainScreen(QWidget):
         main_column.addWidget(self.control_strip)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(20, 16, 20, 16)
+        root.setContentsMargins(20, 12, 20, 12)
         root.setSpacing(14)
         root.addLayout(main_column, stretch=1)
         root.addWidget(self.history_drawer)
@@ -107,17 +103,13 @@ class MainScreen(QWidget):
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
 
-        history_btn = QPushButton("Riwayat")
-        history_btn.clicked.connect(self.history_toggle_requested)
-
         header_bar = QFrame()
         header_bar.setObjectName("headerBar")
         apply_card_shadow(header_bar)
         header = QHBoxLayout(header_bar)
-        header.setContentsMargins(16, 12, 16, 12)
+        header.setContentsMargins(14, 8, 14, 8)
         header.addLayout(title_box)
         header.addStretch(1)
-        header.addWidget(history_btn)
         header.addWidget(self._clock_label, alignment=Qt.AlignmentFlag.AlignRight)
         return header_bar
 

@@ -113,6 +113,6 @@ class CameraThread(QThread):
             status,
         )
 
-        if self._recording and ear_avg is not None:
+        if self._recording:
             ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self._recorder.write_row(ts, ear_left, ear_right, ear_avg, perclos, status)
+            self._recorder.write_row(ts, ear_left, ear_right, ear_avg, perclos, status, face_detected=ear_avg is not None)

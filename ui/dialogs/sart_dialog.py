@@ -87,10 +87,10 @@ class SARTDialog(QDialog):
 
         id_box = QGroupBox("Data Responden")
         id_form = QFormLayout(id_box)
-        # Nama is one-per-Session (satu sesi = satu responden) — edit it via Subject Code on
+        # Nama is one-per-Session (satu sesi = satu responden) — edit it via the Nama field on
         # the session control strip, not here.
         self._nama_label = QLabel(
-            self._session.subject_code or "(kosong — isi di Subject Code pada sesi)"
+            self._session.subject_code or "(kosong — isi di Nama pada sesi)"
         )
         id_form.addRow("Nama:", self._nama_label)
         apply_card_shadow(id_box)

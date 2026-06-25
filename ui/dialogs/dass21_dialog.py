@@ -105,9 +105,9 @@ class DASS21Dialog(QDialog):
         id_form = QFormLayout(id_box)
 
         # Nama is one-per-Session (satu sesi = satu responden), not re-entered per questionnaire —
-        # the only place to set/edit it is the Subject Code field on the session control strip.
+        # the only place to set/edit it is the Nama field on the session control strip.
         self._nama_label = QLabel(
-            self._session.subject_code or "(kosong — isi di Subject Code pada sesi)"
+            self._session.subject_code or "(kosong — isi di Nama pada sesi)"
         )
         self._usia = QLineEdit()
         self._kelamin = QComboBox()

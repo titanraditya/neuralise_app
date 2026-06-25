@@ -33,19 +33,18 @@ def _badge(label: str, ok: bool) -> QLabel:
 
 
 class _SessionRow(QWidget):
-    def __init__(self, session: Session, parent: QWidget | None = None) -> None:
+    def __init__(self, session: Session, generating: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
 
         title = QLabel(session.session_id)
         title.setStyleSheet("font-weight: 700;")
         layout.addWidget(title)
 
-        sub_bits = [b for b in (session.subject_code, session.noise_condition) if b]
-        if sub_bits:
-            sub = QLabel(" · ".join(sub_bits))
+        if session.subject_code:
+            sub = QLabel(session.subject_code)
             sub.setStyleSheet("color: #6b7585; font-size: 11px;")
             layout.addWidget(sub)
 
@@ -58,9 +57,18 @@ class _SessionRow(QWidget):
         badges.addStretch(1)
         layout.addLayout(badges)
 
+        if generating:
+            status = QLabel("⏳ Membuat laporan…")
+            status.setStyleSheet("color: #d97706; font-size: 11px; font-weight: 600;")
+            layout.addWidget(status)
+        elif (session.dir / "report.pdf").exists():
+            status = QLabel("📄 Laporan siap")
+            status.setStyleSheet("color: #1f9d55; font-size: 11px; font-weight: 600;")
+            layout.addWidget(status)
+
 
 class HistoryDrawer(QWidget):
-    """Side panel (open/close, not a screen) listing recordings/<session_id>/ folders.
+    """Always-visible side panel listing recordings/<session_id>/ folders.
 
     Click a session for a summary, fill in a missing questionnaire, or export that one
     session's folder as a zip. Read-only over the filesystem otherwise — no DeviceManager
@@ -68,29 +76,28 @@ class HistoryDrawer(QWidget):
     to the right Session (live vs. reloaded from disk) before opening a dialog.
     """
 
-    close_clicked = Signal()
     dass21_requested = Signal(object)  # Path to the session's folder
     sart_requested = Signal(object)  # Path to the session's folder
     delete_requested = Signal(object)  # Path to the session's folder, already user-confirmed
+    open_pdf_requested = Signal(object)  # Path to the session's folder
+    regenerate_report_requested = Signal(object)  # Path to the session's folder
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("controlBar")
         self.setFixedWidth(320)
         self._sessions: dict[str, Session] = {}
+        self._generating: set[str] = set()  # session_ids with a report subprocess in flight
 
         title = QLabel("Riwayat Sesi")
         title.setObjectName("appTitle")
-        close_btn = QPushButton("×")
-        close_btn.setFixedWidth(32)
-        close_btn.clicked.connect(self.close_clicked)
 
         header = QHBoxLayout()
         header.addWidget(title, stretch=1)
-        header.addWidget(close_btn)
 
         self._list = QListWidget()
-        self._list.setSpacing(4)
+        self._list.setObjectName("historyList")
+        self._list.setSpacing(6)
         self._list.currentItemChanged.connect(self._on_selection_changed)
 
         self._summary_frame = QFrame()
@@ -110,14 +117,23 @@ class HistoryDrawer(QWidget):
         summary_layout.addLayout(btn_row)
 
         btn_row2 = QHBoxLayout()
+        self._open_pdf_btn = QPushButton("Buka PDF")
+        self._open_pdf_btn.clicked.connect(self._on_open_pdf_clicked)
+        self._regenerate_btn = QPushButton("Regenerasi")
+        self._regenerate_btn.clicked.connect(self._on_regenerate_clicked)
+        btn_row2.addWidget(self._open_pdf_btn)
+        btn_row2.addWidget(self._regenerate_btn)
+        summary_layout.addLayout(btn_row2)
+
+        btn_row3 = QHBoxLayout()
         self._export_btn = QPushButton("Export (.zip)")
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._delete_btn = QPushButton("Hapus Sesi")
         self._delete_btn.setObjectName("dangerButton")
         self._delete_btn.clicked.connect(self._on_delete_clicked)
-        btn_row2.addWidget(self._export_btn)
-        btn_row2.addWidget(self._delete_btn)
-        summary_layout.addLayout(btn_row2)
+        btn_row3.addWidget(self._export_btn)
+        btn_row3.addWidget(self._delete_btn)
+        summary_layout.addLayout(btn_row3)
         self._set_summary_enabled(False)
 
         layout = QVBoxLayout(self)
@@ -142,7 +158,7 @@ class HistoryDrawer(QWidget):
 
             item = QListWidgetItem(self._list)
             item.setData(Qt.ItemDataRole.UserRole, session.session_id)
-            row_widget = _SessionRow(session)
+            row_widget = _SessionRow(session, generating=session.session_id in self._generating)
             item.setSizeHint(row_widget.sizeHint())
             self._list.addItem(item)
             self._list.setItemWidget(item, row_widget)
@@ -152,6 +168,18 @@ class HistoryDrawer(QWidget):
         if self._list.currentItem() is None:
             self._set_summary_enabled(False)
             self._summary_label.setText("Pilih sesi untuk lihat ringkasan.")
+        else:
+            self._update_report_buttons(self._selected_session())
+
+    def set_report_generating(self, session_id: str, generating: bool) -> None:
+        """Called by MainWindow as it spawns/finishes the `tools.report` subprocess for a
+        session — this widget has no process/Session lifecycle of its own, it just reflects
+        the state it's told about."""
+        if generating:
+            self._generating.add(session_id)
+        else:
+            self._generating.discard(session_id)
+        self.refresh()
 
     def _current_session_id(self) -> str | None:
         item = self._list.currentItem()
@@ -170,12 +198,12 @@ class HistoryDrawer(QWidget):
             self._set_summary_enabled(False)
             return
         self._set_summary_enabled(True)
+        self._update_report_buttons(session)
         self._summary_label.setText(
             f"<b>{session.session_id}</b><br>"
-            f"Subject: {session.subject_code or '-'}<br>"
-            f"Noise: {session.noise_condition or '-'}<br>"
-            f"Mulai: {session.started_at}<br>"
-            f"Selesai: {session.ended_at or '(masih aktif)'}"
+            f"Nama: {session.subject_code or '-'}<br>"
+            f"Waktu: {session.ended_at or '(masih aktif)'}<br>"
+            f"Durasi: {session.duration_str() or '-'}"
         )
 
     def _set_summary_enabled(self, enabled: bool) -> None:
@@ -183,6 +211,22 @@ class HistoryDrawer(QWidget):
         self._sart_btn.setEnabled(enabled)
         self._export_btn.setEnabled(enabled)
         self._delete_btn.setEnabled(enabled)
+        if not enabled:
+            self._open_pdf_btn.setEnabled(False)
+            self._regenerate_btn.setEnabled(False)
+
+    def _update_report_buttons(self, session: Session | None) -> None:
+        """A report is only meaningful once a session has actually ended (camera.csv/eeg.csv
+        fully written) — and never while a `tools.report` subprocess is already in flight for
+        it, to avoid double-spawning or opening a file mid-rewrite."""
+        if session is None:
+            self._open_pdf_btn.setEnabled(False)
+            self._regenerate_btn.setEnabled(False)
+            return
+        generating = session.session_id in self._generating
+        has_report = (session.dir / "report.pdf").exists()
+        self._open_pdf_btn.setEnabled(has_report and not generating)
+        self._regenerate_btn.setEnabled(session.ended_at is not None and not generating)
 
     def _on_dass21_clicked(self) -> None:
         session = self._selected_session()
@@ -193,6 +237,16 @@ class HistoryDrawer(QWidget):
         session = self._selected_session()
         if session is not None:
             self.sart_requested.emit(session.dir)
+
+    def _on_open_pdf_clicked(self) -> None:
+        session = self._selected_session()
+        if session is not None:
+            self.open_pdf_requested.emit(session.dir)
+
+    def _on_regenerate_clicked(self) -> None:
+        session = self._selected_session()
+        if session is not None:
+            self.regenerate_report_requested.emit(session.dir)
 
     def _on_delete_clicked(self) -> None:
         session = self._selected_session()

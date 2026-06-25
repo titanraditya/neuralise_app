@@ -1,5 +1,5 @@
 from PySide6.QtCore import QTime, Qt, QTimer
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ui.effects import apply_card_shadow
 
@@ -49,7 +49,7 @@ class StatusBadge(QFrame):
         self._value.setText(f"{label} {detail}".strip())
         self._value.setStyleSheet(
             f"background-color: {color}; color: #14181f;"
-            "font-weight: 700; font-size: 14px; border-radius: 8px; padding: 8px 6px;"
+            "font-weight: 700; font-size: 14px; border-radius: 8px; padding: 5px 6px;"
         )
 
 
@@ -82,32 +82,29 @@ class StatusPanel(QWidget):
         self._cam_badge = StatusBadge("Camera")
         self._final_badge = StatusBadge("Final Status")
 
-        badges_row = QHBoxLayout()
-        badges_row.setSpacing(10)
-        badges_row.addWidget(self._eeg_badge)
-        badges_row.addWidget(self._cam_badge)
-
         self._tiles = {
-            "session": MetricTile("Session time"),
+            "record": MetricTile("Record time"),
             "perclos": MetricTile("PERCLOS"),
         }
 
-        grid = QGridLayout()
-        grid.setSpacing(10)
-        grid.addWidget(self._tiles["session"], 0, 0)
-        grid.addWidget(self._tiles["perclos"], 0, 1)
+        # EEG/Camera badges share a row with the metric tiles — only the fused Final Status
+        # gets its own full-width row, to keep it as the most prominent element.
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        top_row.addWidget(self._eeg_badge)
+        top_row.addWidget(self._cam_badge)
+        top_row.addWidget(self._tiles["record"])
+        top_row.addWidget(self._tiles["perclos"])
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.addLayout(badges_row)
+        layout.setSpacing(8)
+        layout.addLayout(top_row)
         layout.addWidget(self._final_badge)
-        layout.addSpacing(4)
-        layout.addLayout(grid)
         layout.addStretch(1)
 
-        self._elapsed = QTime(0, 0, 0)
-        self._session_timer = QTimer(self)
-        self._session_timer.timeout.connect(self._tick)
+        self._record_elapsed = QTime(0, 0, 0)
+        self._record_timer = QTimer(self)
+        self._record_timer.timeout.connect(self._tick)
 
     def set_eeg_status(self, status: str, detail: str = "") -> None:
         self._eeg_badge.set_status(status, detail)
@@ -124,14 +121,14 @@ class StatusPanel(QWidget):
         if key in self._tiles:
             self._tiles[key].set_value(text)
 
-    def start_session(self) -> None:
-        self._elapsed = QTime(0, 0, 0)
-        self.set_metric("session", "00:00:00")
-        self._session_timer.start(1000)
+    def start_record_timer(self) -> None:
+        self._record_elapsed = QTime(0, 0, 0)
+        self.set_metric("record", "00:00:00")
+        self._record_timer.start(1000)
 
-    def stop_session(self) -> None:
-        self._session_timer.stop()
+    def stop_record_timer(self) -> None:
+        self._record_timer.stop()
 
     def _tick(self) -> None:
-        self._elapsed = self._elapsed.addSecs(1)
-        self.set_metric("session", self._elapsed.toString("hh:mm:ss"))
+        self._record_elapsed = self._record_elapsed.addSecs(1)
+        self.set_metric("record", self._record_elapsed.toString("hh:mm:ss"))
