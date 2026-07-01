@@ -12,6 +12,7 @@ from ui.effects import apply_card_shadow
 from ui.widgets.camera_panel import CameraPanel
 from ui.widgets.device_row import DeviceRow
 from ui.widgets.eeg_panel import EEGPanel
+from ui.widgets.eog_panel import EOGPanel
 from ui.widgets.history_drawer import HistoryDrawer
 from ui.widgets.session_strip import SessionControlStrip
 from ui.widgets.status_panel import StatusPanel
@@ -44,6 +45,7 @@ class MainScreen(QWidget):
 
         self.camera_panel = CameraPanel()
         self.eeg_panel = EEGPanel()
+        self.eog_panel = EOGPanel()
         self.status_panel = StatusPanel()
 
         self.control_strip = SessionControlStrip()
@@ -72,6 +74,7 @@ class MainScreen(QWidget):
         right_column = QVBoxLayout()
         right_column.setSpacing(10)
         right_column.addWidget(_section("EEG Signal", self.eeg_panel), stretch=2)
+        right_column.addWidget(_section("EOG Signal", self.eog_panel), stretch=2)
         right_column.addWidget(_section("Status", self.status_panel), stretch=1)
         content.addLayout(right_column, stretch=2)
 

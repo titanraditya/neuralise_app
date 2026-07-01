@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from core.sources.base import CameraSource, EEGSource
+from core.sources.base import CameraSource, EEGSource, EOGSource
 
 
 # Drowsy stretch repeats every CYCLE_SECONDS, lasting DROWSY_SECONDS — long enough to push
@@ -132,3 +132,81 @@ class MockEEGSource(EEGSource):
             alpha = float(self._rng.uniform(0.3, 0.8))
 
         return [delta, theta, alpha, beta, gamma]
+
+
+# Blinks come faster and last longer during the same drowsy stretch as MockCameraSource/
+# MockEEGSource, so blink-rate/EOG-PERCLOS analysis built on top of this has something to catch.
+EOG_SAMPLE_RATE = 200.0
+BLINK_INTERVAL_NORMAL = 4.0
+BLINK_INTERVAL_DROWSY = 1.2
+BLINK_DURATION_NORMAL = 0.15
+BLINK_DURATION_DROWSY = 0.45
+
+
+class MockEOGSource(EOGSource):
+    """Generates a synthetic single-channel ("A1") EOG signal: baseline noise plus periodic
+    blink-like deflections, standing in for an LSL/OpenSignals stream."""
+
+    def __init__(self) -> None:
+        self._running = False
+        self._t0 = 0.0
+        self._last_t = 0.0
+        self._next_blink_at = 0.0
+        self._active_blinks: list[tuple[float, float]] = []  # (center, sigma) still in range
+        self._rng = np.random.default_rng()
+
+    def start(self) -> None:
+        self._running = True
+        self._t0 = time.time()
+        self._last_t = 0.0
+        self._next_blink_at = BLINK_INTERVAL_NORMAL
+        self._active_blinks = []
+
+    def stop(self) -> None:
+        self._running = False
+
+    @property
+    def channel_names(self) -> list[str]:
+        return ["A1"]
+
+    @property
+    def sample_rate(self) -> float:
+        return EOG_SAMPLE_RATE
+
+    def get_samples(self) -> np.ndarray | None:
+        if not self._running:
+            return None
+
+        now = time.time() - self._t0
+        n_new = int((now - self._last_t) * EOG_SAMPLE_RATE)
+        if n_new <= 0:
+            return None
+
+        t = self._last_t + np.arange(1, n_new + 1) / EOG_SAMPLE_RATE
+        self._last_t = now
+
+        in_drowsy_stretch = (now % CYCLE_SECONDS) > (CYCLE_SECONDS - DROWSY_SECONDS)
+        blink_duration = BLINK_DURATION_DROWSY if in_drowsy_stretch else BLINK_DURATION_NORMAL
+        blink_interval = BLINK_INTERVAL_DROWSY if in_drowsy_stretch else BLINK_INTERVAL_NORMAL
+        sigma = blink_duration / 2.5
+
+        # Schedule blink centers as soon as this chunk reaches their leading edge (~4 sigma
+        # before the peak), then keep evaluating each one across every later chunk its Gaussian
+        # tail still reaches — a single blink's pulse spans many chunks, not just the one
+        # nearest its center.
+        while self._next_blink_at < t[-1] + 4 * sigma:
+            self._active_blinks.append((self._next_blink_at, sigma))
+            self._next_blink_at += blink_interval
+
+        signal = self._rng.normal(0, 0.02, n_new)
+        for center, b_sigma in self._active_blinks:
+            signal += self._blink_pulse(t, center, b_sigma)
+
+        cutoff = t[0] - 4 * sigma
+        self._active_blinks = [(c, s) for c, s in self._active_blinks if c + 4 * s >= cutoff]
+
+        return signal.reshape(1, -1).astype(np.float32)
+
+    @staticmethod
+    def _blink_pulse(t: np.ndarray, center: float, sigma: float) -> np.ndarray:
+        return np.exp(-0.5 * ((t - center) / sigma) ** 2)

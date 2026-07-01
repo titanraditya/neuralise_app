@@ -57,3 +57,38 @@ class EEGSource(ABC):
     def band_powers(self, segments: np.ndarray, good_channels: list[int]) -> list[float] | None:
         """Return [delta, theta, alpha, beta, gamma] averaged over good_channels, or None if unsupported."""
         return None
+
+
+class EOGSource(ABC):
+    """Interface every EOG backend (mock, LSL/OpenSignals, etc.) must implement."""
+
+    @abstractmethod
+    def start(self) -> None:
+        ...
+
+    @abstractmethod
+    def stop(self) -> None:
+        ...
+
+    @property
+    @abstractmethod
+    def channel_names(self) -> list[str]:
+        ...
+
+    @property
+    @abstractmethod
+    def sample_rate(self) -> float:
+        ...
+
+    @abstractmethod
+    def get_samples(self) -> np.ndarray | None:
+        """Return new samples since the last call, shape (n_channels, n_samples)."""
+        ...
+
+    def filter_for_display(self, segment: np.ndarray) -> np.ndarray:
+        """Clean up a single-channel segment for plotting. Default: no filtering."""
+        return segment
+
+    def check_contact(self, segment: np.ndarray) -> bool:
+        """Return False if a single-channel segment looks like a lost/floating electrode."""
+        return True

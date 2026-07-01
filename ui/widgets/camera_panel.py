@@ -1,18 +1,31 @@
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.effects import apply_card_shadow
 
 
 class CameraPanel(QWidget):
-    """Renders frames pushed in via update_frame(); DeviceManager owns the actual camera feed."""
+    """Renders frames pushed in via update_frame(); DeviceManager owns the actual camera feed.
+
+    Also shows PERCLOS (set_perclos()) inline — moved here from status_panel.py's MetricTile
+    so each modality panel (Camera/EEG/EOG) carries its own derived metric.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._active = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self._perclos_label = QLabel("PERCLOS: –")
+        self._perclos_label.setObjectName("contactLabel")
+
+        metrics_row = QHBoxLayout()
+        metrics_row.addWidget(self._perclos_label)
+        metrics_row.addStretch(1)
+        metrics_row_widget = QWidget()
+        metrics_row_widget.setLayout(metrics_row)
 
         self._view = QLabel("No camera connected")
         self._view.setObjectName("cameraView")
@@ -23,7 +36,8 @@ class CameraPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._view)
+        layout.addWidget(metrics_row_widget)
+        layout.addWidget(self._view, stretch=1)
 
     def set_active(self, active: bool) -> None:
         """Marks the externally-driven feed (DeviceManager) as live or stopped.
@@ -39,10 +53,14 @@ class CameraPanel(QWidget):
             return
         self._set_frame(frame)
 
+    def set_perclos(self, perclos: float) -> None:
+        self._perclos_label.setText(f"PERCLOS: {perclos * 100:.1f}%")
+
     def clear(self) -> None:
         self._active = False
         self._view.setPixmap(QPixmap())
         self._view.setText("No camera connected")
+        self._perclos_label.setText("PERCLOS: –")
 
     def _set_frame(self, frame) -> None:
         pixmap = self._frame_to_pixmap(frame).scaled(

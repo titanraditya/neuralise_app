@@ -73,28 +73,32 @@ class MetricTile(QFrame):
 
 
 class StatusPanel(QWidget):
-    """EEG and camera drowsiness badges, fused into a final verdict, plus key metrics."""
+    """EEG and camera drowsiness badges, fused into a final verdict, plus key metrics.
+
+    Also carries an EOG badge for visibility — deliberately outside _fuse_status()/Final
+    Status: EOG is reported standalone, not part of the camera+EEG OR-rule.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self._eeg_badge = StatusBadge("EEG")
         self._cam_badge = StatusBadge("Camera")
+        self._eog_badge = StatusBadge("EOG")
         self._final_badge = StatusBadge("Final Status")
 
         self._tiles = {
             "record": MetricTile("Record time"),
-            "perclos": MetricTile("PERCLOS"),
         }
 
-        # EEG/Camera badges share a row with the metric tiles — only the fused Final Status
+        # EEG/Camera/EOG badges share a row with the metric tiles — only the fused Final Status
         # gets its own full-width row, to keep it as the most prominent element.
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
         top_row.addWidget(self._eeg_badge)
         top_row.addWidget(self._cam_badge)
+        top_row.addWidget(self._eog_badge)
         top_row.addWidget(self._tiles["record"])
-        top_row.addWidget(self._tiles["perclos"])
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -113,6 +117,9 @@ class StatusPanel(QWidget):
     def set_cam_status(self, status: str) -> None:
         self._cam_badge.set_status(status)
         self._recompute_final()
+
+    def set_eog_status(self, status: str, detail: str = "") -> None:
+        self._eog_badge.set_status(status, detail)
 
     def _recompute_final(self) -> None:
         self._final_badge.set_status(_fuse_status(self._eeg_badge.status, self._cam_badge.status))

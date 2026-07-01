@@ -27,6 +27,7 @@ class Session:
 
         self.has_camera = False
         self.has_eeg = False
+        self.has_eog = False
         self.has_dass21 = False
         self.has_sart = False
 
@@ -41,6 +42,10 @@ class Session:
     @property
     def eeg_csv_path(self) -> Path:
         return self.dir / "eeg.csv"
+
+    @property
+    def eog_csv_path(self) -> Path:
+        return self.dir / "eog.csv"
 
     @property
     def meta_path(self) -> Path:
@@ -72,6 +77,7 @@ class Session:
         session.ended_at = meta.get("ended_at")
         session.has_camera = meta.get("has_camera", False)
         session.has_eeg = meta.get("has_eeg", False)
+        session.has_eog = meta.get("has_eog", False)
         session.has_dass21 = meta.get("has_dass21", False)
         session.has_sart = meta.get("has_sart", False)
         session.dir = session_dir
@@ -100,6 +106,7 @@ class Session:
             "ended_at": self.ended_at,
             "has_camera": self.has_camera,
             "has_eeg": self.has_eeg,
+            "has_eog": self.has_eog,
             "has_dass21": self.has_dass21,
             "has_sart": self.has_sart,
         }

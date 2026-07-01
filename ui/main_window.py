@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self._screen.device_row.camera_toggled.connect(self._on_camera_toggled)
         self._screen.device_row.eeg_toggled.connect(self._on_eeg_toggled)
         self._screen.device_row.calibrate_eeg_clicked.connect(self._on_calibrate_eeg)
+        self._screen.device_row.eog_toggled.connect(self._on_eog_toggled)
+        self._screen.device_row.calibrate_eog_clicked.connect(self._on_calibrate_eog)
 
     def _wire_device_manager(self) -> None:
         dm = self._device_manager
@@ -67,6 +69,13 @@ class MainWindow(QMainWindow):
         dm.eeg_connecting_changed.connect(self._screen.device_row.set_eeg_connecting)
         dm.eeg_connected_changed.connect(self._on_eeg_connected_changed)
         dm.eeg_connect_failed.connect(self._on_eeg_connect_failed)
+        dm.eog_frame_ready.connect(self._screen.eog_panel.update_frame)
+        dm.eog_metrics_ready.connect(self._screen.eog_panel.update_metrics)
+        dm.eog_status_ready.connect(self._screen.eog_panel.set_status)
+        dm.eog_status_ready.connect(self._screen.status_panel.set_eog_status)
+        dm.eog_connecting_changed.connect(self._screen.device_row.set_eog_connecting)
+        dm.eog_connected_changed.connect(self._on_eog_connected_changed)
+        dm.eog_connect_failed.connect(self._on_eog_connect_failed)
 
     def _on_camera_toggled(self, connected: bool) -> None:
         if connected:
@@ -76,14 +85,13 @@ class MainWindow(QMainWindow):
             self._device_manager.disconnect_camera()
             self._screen.camera_panel.clear()
             self._screen.status_panel.set_cam_status("idle")
-            self._screen.status_panel.set_metric("perclos", "--")
 
     def _on_camera_analysis(
         self, _ear_l: float, _ear_r: float, _ear_avg: float, perclos: float, status: str
     ) -> None:
         if not self._device_manager.camera_connected:
             return  # straggler analysis_ready queued just before the worker thread stopped
-        self._screen.status_panel.set_metric("perclos", f"{perclos * 100:.1f}%")
+        self._screen.camera_panel.set_perclos(perclos)
         self._screen.status_panel.set_cam_status("drowsy" if status == "drowsy" else "awake")
 
     def _on_camera_error(self, message: str) -> None:
@@ -119,6 +127,29 @@ class MainWindow(QMainWindow):
             return
         ok_count = sum(1 for ok in contact_ok if ok)
         self._screen.device_row.set_eeg_contact_text(f"Kontak EEG: {ok_count}/{len(contact_ok)} OK")
+
+    def _on_eog_toggled(self, connected: bool) -> None:
+        if connected:
+            self._device_manager.connect_eog()
+        else:
+            self._device_manager.disconnect_eog()
+
+    def _on_eog_connected_changed(self, connected: bool) -> None:
+        self._screen.device_row.set_eog_connected(connected)
+        if connected:
+            self._screen.eog_panel.set_channels(
+                self._device_manager.eog_channel_names, self._device_manager.eog_sample_rate
+            )
+        else:
+            self._screen.eog_panel.set_channels([])
+            self._screen.status_panel.set_eog_status("idle")
+
+    def _on_eog_connect_failed(self, message: str) -> None:
+        self._screen.device_row.set_eog_connected(False)
+        QMessageBox.critical(self, "EOG Connection Error", message)
+
+    def _on_calibrate_eog(self) -> None:
+        self._device_manager.start_eog_calibration()
 
     # ------------------------------------------------------------------
     # Control strip <-> Session (recording layer — decoupled from device connect/disconnect)
@@ -163,11 +194,15 @@ class MainWindow(QMainWindow):
             if dm.eeg_connected:
                 dm.start_eeg_recording(self._session.eeg_csv_path)
                 self._session.has_eeg = True
+            if dm.eog_connected:
+                dm.start_eog_recording(self._session.eog_csv_path)
+                self._session.has_eog = True
             self._session.write_meta()
             self._screen.status_panel.start_record_timer()
         else:
             dm.stop_camera_recording()
             dm.stop_eeg_recording()
+            dm.stop_eog_recording()
             self._screen.status_panel.stop_record_timer()
         self._refresh_history()
 
@@ -176,6 +211,7 @@ class MainWindow(QMainWindow):
             return
         self._device_manager.stop_camera_recording()
         self._device_manager.stop_eeg_recording()
+        self._device_manager.stop_eog_recording()
         self._screen.status_panel.stop_record_timer()
         self._session.end()  # writer flushed+closed by stop_*_recording() above before this point
         session_dir = self._session.dir

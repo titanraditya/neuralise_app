@@ -7,8 +7,11 @@ from PySide6.QtCore import QObject, QThread, Signal
 from camera.camera_thread import CameraThread
 from core.eeg_drowsiness import EEGDrowsinessDetector
 from core.eeg_recorder import EEGRecorder
-from core.sources.base import EEGSource
-from core.sources.mock import MockEEGSource
+from core.eog_drowsiness import EOGDrowsinessDetector
+from core.eog_recorder import EOGRecorder
+from core.sources.base import EEGSource, EOGSource
+from core.sources.eog_lsl import LSLEOGSource
+from core.sources.mock import MockEEGSource, MockEOGSource
 from core.sources.muse import MuseEEGSource
 
 EEG_POLL_MS = 33  # raw sample acquisition cadence — matches the old ui/widgets/eeg_panel.py REFRESH_MS
@@ -19,6 +22,12 @@ DISPLAY_UPDATE_EVERY_N_POLLS = 3  # ~10Hz filtered-segment redraw; filtering+plo
 # a 5s window, 4 channels, 30x/s). Must divide BAND_UPDATE_EVERY_N_POLLS so contact_ok is
 # always fresh on a band-update tick — see the assert below.
 assert BAND_UPDATE_EVERY_N_POLLS % DISPLAY_UPDATE_EVERY_N_POLLS == 0
+
+EOG_POLL_MS = 33
+EOG_WINDOW_SECONDS = 5.0  # live-preview buffer length, same convention as EEG_WINDOW_SECONDS
+METRICS_UPDATE_EVERY_N_POLLS = round(1000 / EOG_POLL_MS)  # ~once per second, mirrors BAND_UPDATE_EVERY_N_POLLS
+EOG_DISPLAY_UPDATE_EVERY_N_POLLS = 3  # ~10 Hz filtered-segment redraw; mirrors EEG DISPLAY_UPDATE_EVERY_N_POLLS
+assert METRICS_UPDATE_EVERY_N_POLLS % EOG_DISPLAY_UPDATE_EVERY_N_POLLS == 0
 
 
 class _EEGWorker(QThread):
@@ -152,6 +161,121 @@ class _EEGWorker(QThread):
             self._recorder.write_row(ts, bands, ratio, status, contact_ok=True)
 
 
+class _EOGWorker(QThread):
+    """Owns one EOG connection end-to-end — connect, acquisition loop, blink/PERCLOS analysis,
+    and recording — entirely off the GUI thread (mirrors _EEGWorker above). Reports its own
+    status standalone; never feeds into the camera+EEG OR-rule fusion in status_panel.py.
+    """
+
+    connected = Signal(list, float)  # channel_names, sample_rate
+    connect_failed = Signal(str)
+    frame_ready = Signal(object)  # display_segment: np.ndarray (channel A1 only)
+    metrics_ready = Signal(float, float)  # blink_rate (per min), eog_perclos (fraction)
+    status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
+
+    def __init__(self, source: EOGSource, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._source = source
+        self._running = False
+        self._detector: EOGDrowsinessDetector | None = None
+        self._calibration_active = False
+        self._recorder: EOGRecorder | None = None
+        self._recording = False
+
+    def start_calibration(self) -> None:
+        if self._detector is not None:
+            self._detector.reset()
+        self._calibration_active = True
+
+    def start_recording(self, path: str | Path) -> None:
+        recorder = EOGRecorder()
+        recorder.start(path)
+        self._recorder = recorder
+        self._recording = True
+
+    def stop_recording(self) -> None:
+        self._recording = False
+        if self._recorder is not None:
+            self._recorder.stop()
+            self._recorder = None
+
+    def stop(self) -> None:
+        self._running = False
+        self.wait()
+
+    def run(self) -> None:
+        try:
+            self._source.start()
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a connection error
+            self.connect_failed.emit(str(exc))
+            return
+
+        self._running = True
+        self.connected.emit(list(self._source.channel_names), self._source.sample_rate)
+        self._detector = EOGDrowsinessDetector(sample_rate=self._source.sample_rate)
+
+        window_points = max(int(EOG_WINDOW_SECONDS * self._source.sample_rate), 1)
+        buffer = np.zeros(window_points, dtype=np.float32)
+        poll_count = 0
+        samples_seen = 0  # TEMP diagnostic: total samples pulled from the source so far
+
+        try:
+            while self._running:
+                samples = self._source.get_samples()
+                new_chunk = samples[0] if samples is not None and samples.shape[1] > 0 else None
+
+                if new_chunk is not None:
+                    samples_seen += len(new_chunk)
+                    buffer = np.concatenate([buffer, new_chunk])[-len(buffer):]
+
+                    # Drowsy/awake classification (and blink/PERCLOS accumulation) only runs
+                    # once the user has explicitly started calibration — same gating as EEG.
+                    if self._calibration_active:
+                        status = self._detector.update(new_chunk)
+                        detail = (
+                            f"{int(self._detector.calibration_seconds_left())}s"
+                            if status == "calibrating"
+                            else ""
+                        )
+                        self.status_ready.emit(status, detail)
+                    else:
+                        status = "idle"
+
+                    if self._recording and self._recorder is not None:
+                        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        self._recorder.write_row(
+                            ts, self._detector.blink_rate(), self._detector.perclos(), status
+                        )
+
+                poll_count += 1
+                if poll_count % EOG_DISPLAY_UPDATE_EVERY_N_POLLS == 0:
+                    self.frame_ready.emit(self._source.filter_for_display(buffer))
+                if poll_count % METRICS_UPDATE_EVERY_N_POLLS == 0:
+                    # TEMP diagnostic. zeros_in_buf>0 persistently => buffer never fills (bug).
+                    # disp_* is what's actually drawn: tiny range => flat (filter working, little
+                    # real EOG); large range => the rising-curve shape we're chasing. Remove later.
+                    disp = self._source.filter_for_display(buffer)
+                    zeros = int(np.count_nonzero(buffer == 0.0))
+                    print(
+                        f"[EOG diag] t={poll_count * EOG_POLL_MS / 1000:.0f}s "
+                        f"samples_seen={samples_seen} zeros_in_buf={zeros}/{len(buffer)} "
+                        f"buffer_std={float(np.std(buffer)):.3f} "
+                        f"disp_std={float(np.std(disp)):.3f} "
+                        f"disp_range=[{float(disp.min()):.2f},{float(disp.max()):.2f}]",
+                        flush=True,
+                    )
+                    self.metrics_ready.emit(self._detector.blink_rate(), self._detector.perclos())
+
+                self.msleep(EOG_POLL_MS)
+        except Exception:  # noqa: BLE001 - TEMP diagnostic: surface an otherwise-silent thread crash
+            import traceback
+
+            print("[EOG diag] worker loop crashed:", flush=True)
+            traceback.print_exc()
+        finally:
+            self._source.stop()
+
+
 class DeviceManager(QObject):
     """Rig-level owner of the camera + EEG connections (CLAUDE.md target architecture).
 
@@ -171,6 +295,14 @@ class DeviceManager(QObject):
     eeg_connected_changed = Signal(bool)  # True after a successful connect, False on disconnect
     eeg_connect_failed = Signal(str)  # error message
 
+    eog_frame_ready = Signal(object)  # display_segment: np.ndarray (channel A1 only)
+    eog_metrics_ready = Signal(float, float)  # blink_rate (per min), eog_perclos (fraction)
+    eog_status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
+
+    eog_connecting_changed = Signal(bool)  # True while a connect attempt is in flight
+    eog_connected_changed = Signal(bool)  # True after a successful connect, False on disconnect
+    eog_connect_failed = Signal(str)  # error message
+
     def __init__(self, use_mock: bool = False, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._use_mock = use_mock
@@ -179,6 +311,10 @@ class DeviceManager(QObject):
 
         self._eeg_worker: _EEGWorker | None = None
         self._eeg_channel_names: list[str] = []
+
+        self._eog_worker: _EOGWorker | None = None
+        self._eog_channel_names: list[str] = []
+        self._eog_sample_rate: float = 0.0
 
     # ------------------------------------------------------------------
     # Camera — persistent connection, independent of any Session
@@ -280,8 +416,79 @@ class DeviceManager(QObject):
         if self._eeg_worker is not None:
             self._eeg_worker.stop_recording()
 
+    # ------------------------------------------------------------------
+    # EOG — persistent connection; calibration is manual-only (start_eog_calibration()), same
+    # gating as EEG. Reported standalone — never wired into the camera+EEG OR-rule fusion.
+    # ------------------------------------------------------------------
+
+    @property
+    def eog_connected(self) -> bool:
+        return self._eog_worker is not None
+
+    @property
+    def eog_channel_names(self) -> list[str]:
+        return list(self._eog_channel_names)
+
+    @property
+    def eog_sample_rate(self) -> float:
+        return self._eog_sample_rate
+
+    def connect_eog(self) -> None:
+        """Connects asynchronously: LSL stream discovery in _EOGWorker.run() happens on a worker
+        thread so it can't freeze the UI. Result arrives via eog_connected_changed/
+        eog_connect_failed, bracketed by eog_connecting_changed(True)/(False)."""
+        if self._eog_worker is not None:
+            return
+        source = MockEOGSource() if self._use_mock else LSLEOGSource()
+        worker = _EOGWorker(source, self)
+        worker.connected.connect(self._on_eog_connected)
+        worker.connect_failed.connect(self._on_eog_connect_failed)
+        worker.frame_ready.connect(self.eog_frame_ready)
+        worker.metrics_ready.connect(self.eog_metrics_ready)
+        worker.status_ready.connect(self.eog_status_ready)
+        worker.finished.connect(worker.deleteLater)
+        self._eog_worker = worker
+        self.eog_connecting_changed.emit(True)
+        worker.start()
+
+    def _on_eog_connected(self, channel_names: list[str], sample_rate: float) -> None:
+        self._eog_channel_names = channel_names
+        self._eog_sample_rate = sample_rate
+        self.eog_connecting_changed.emit(False)
+        self.eog_connected_changed.emit(True)
+
+    def _on_eog_connect_failed(self, message: str) -> None:
+        self._eog_worker = None
+        self.eog_connecting_changed.emit(False)
+        self.eog_connect_failed.emit(message)
+
+    def disconnect_eog(self) -> None:
+        if self._eog_worker is None:
+            return
+        self._eog_worker.stop()  # blocks until the acquisition loop + source.stop() finish
+        self._eog_worker = None
+        self._eog_channel_names = []
+        self._eog_sample_rate = 0.0
+        self.eog_connected_changed.emit(False)
+
+    def start_eog_calibration(self) -> None:
+        """(Re-)run the 30s baseline, triggered only by an explicit user action (a dedicated
+        "Kalibrasi EOG" button) — never automatically on connect_eog() or when a Session is
+        created. Also doubles as recalibrate."""
+        if self._eog_worker is not None:
+            self._eog_worker.start_calibration()
+
+    def start_eog_recording(self, path: str | Path) -> None:
+        if self._eog_worker is not None:
+            self._eog_worker.start_recording(path)
+
+    def stop_eog_recording(self) -> None:
+        if self._eog_worker is not None:
+            self._eog_worker.stop_recording()
+
     def shutdown(self) -> None:
         """Stop all acquisition threads/connections cleanly (fix finding #2: call this from the
         main window's closeEvent so a window close can never leak a running CameraThread)."""
         self.disconnect_camera()
         self.disconnect_eeg()
+        self.disconnect_eog()
