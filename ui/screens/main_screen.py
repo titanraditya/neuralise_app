@@ -3,7 +3,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -22,7 +21,7 @@ def _section(label: str, widget: QWidget) -> QWidget:
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(4)
+    layout.setSpacing(3)
     caption = QLabel(label)
     caption.setObjectName("sectionLabel")
     layout.addWidget(caption)
@@ -45,7 +44,8 @@ class MainScreen(QWidget):
 
         self.camera_panel = CameraPanel()
         self.eeg_panel = EEGPanel()
-        self.eog_panel = EOGPanel()
+        self.eog_panel = EOGPanel()  # OpenSignals/BITalino EOG (LSL)
+        self.museeog_panel = EOGPanel()  # EOG derived from the Muse AF7 frontal electrode
         self.status_panel = StatusPanel()
 
         self.control_strip = SessionControlStrip()
@@ -63,37 +63,48 @@ class MainScreen(QWidget):
 
         main_column = QVBoxLayout()
         main_column.setContentsMargins(0, 0, 0, 0)
-        main_column.setSpacing(8)
+        main_column.setSpacing(6)
         main_column.addWidget(self._build_header())
         main_column.addWidget(self.device_row)
 
         content = QHBoxLayout()
-        content.setSpacing(12)
-        content.addWidget(_section("Camera", self.camera_panel), stretch=3)
+        content.setSpacing(10)
+        content.addWidget(_section("Camera", self.camera_panel), stretch=1)
+
+        # The two single-trace EOG panels sit side by side rather than stacked: the screen's
+        # tight dimension is height, so giving each modality its own vertical slot no longer
+        # fits on one screen. Horizontally there's room to spare.
+        eog_row = QHBoxLayout()
+        eog_row.setContentsMargins(0, 0, 0, 0)
+        eog_row.setSpacing(8)
+        eog_row.addWidget(_section("EOG · BITalino", self.eog_panel), stretch=1)
+        eog_row.addWidget(_section("EOG · Muse (AF7)", self.museeog_panel), stretch=1)
+        eog_row_widget = QWidget()
+        eog_row_widget.setLayout(eog_row)
 
         right_column = QVBoxLayout()
-        right_column.setSpacing(10)
-        right_column.addWidget(_section("EEG Signal", self.eeg_panel), stretch=2)
-        right_column.addWidget(_section("EOG Signal", self.eog_panel), stretch=2)
-        right_column.addWidget(_section("Status", self.status_panel), stretch=1)
-        content.addLayout(right_column, stretch=2)
+        right_column.setSpacing(6)
+        right_column.addWidget(_section("EEG Signal", self.eeg_panel), stretch=3)
+        right_column.addWidget(eog_row_widget, stretch=2)
+        content.addLayout(right_column, stretch=1)
 
         content_widget = QWidget()
         content_widget.setLayout(content)
 
-        # Camera/EEG/Status want a fairly tall minimum size to stay legible. On a short screen
-        # that no longer fits, so this scrolls instead of pushing control_strip off-screen below.
-        content_scroll = QScrollArea()
-        content_scroll.setWidgetResizable(True)
-        content_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        content_scroll.setWidget(content_widget)
-
-        main_column.addWidget(content_scroll, stretch=1)
+        # No QScrollArea here on purpose: the layout is compact enough to fit on one screen, and
+        # sizing content purely by stretch factors keeps every panel proportional. (A scroll area
+        # would size this to its tall sizeHint whenever a word-wrapped "not connected" placeholder
+        # became visible — via heightForWidth — ballooning the EEG plot and forcing a scrollbar.)
+        main_column.addWidget(content_widget, stretch=1)
+        # Status is a full-width strip (not inside the scrollable content column): a single row
+        # of badges reads better across the whole width, and keeping it out of the right column
+        # frees the vertical space that was forcing everything to scroll.
+        main_column.addWidget(self.status_panel)
         main_column.addWidget(self.control_strip)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(20, 12, 20, 12)
-        root.setSpacing(14)
+        root.setContentsMargins(14, 10, 14, 10)
+        root.setSpacing(12)
         root.addLayout(main_column, stretch=1)
         root.addWidget(self.history_drawer)
 
@@ -110,7 +121,7 @@ class MainScreen(QWidget):
         header_bar.setObjectName("headerBar")
         apply_card_shadow(header_bar)
         header = QHBoxLayout(header_bar)
-        header.setContentsMargins(14, 8, 14, 8)
+        header.setContentsMargins(12, 6, 12, 6)
         header.addLayout(title_box)
         header.addStretch(1)
         header.addWidget(self._clock_label, alignment=Qt.AlignmentFlag.AlignRight)

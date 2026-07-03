@@ -38,6 +38,8 @@ class StatusBadge(QFrame):
         self._value.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(3)
         layout.addWidget(caption_label)
         layout.addWidget(self._value)
 
@@ -49,7 +51,7 @@ class StatusBadge(QFrame):
         self._value.setText(f"{label} {detail}".strip())
         self._value.setStyleSheet(
             f"background-color: {color}; color: #14181f;"
-            "font-weight: 700; font-size: 14px; border-radius: 8px; padding: 5px 6px;"
+            "font-weight: 700; font-size: 13px; border-radius: 8px; padding: 4px 6px;"
         )
 
 
@@ -65,6 +67,8 @@ class MetricTile(QFrame):
         caption.setObjectName("metricCaption")
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(3)
         layout.addWidget(self._value, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(caption, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -91,20 +95,18 @@ class StatusPanel(QWidget):
             "record": MetricTile("Record time"),
         }
 
-        # EEG/Camera/EOG badges share a row with the metric tiles — only the fused Final Status
-        # gets its own full-width row, to keep it as the most prominent element.
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
-        top_row.addWidget(self._eeg_badge)
-        top_row.addWidget(self._cam_badge)
-        top_row.addWidget(self._eog_badge)
-        top_row.addWidget(self._tiles["record"])
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.addLayout(top_row)
-        layout.addWidget(self._final_badge)
-        layout.addStretch(1)
+        # One full-width row: per-modality badges, the fused Final Status, and the record timer
+        # all side by side. main_screen places this as a strip along the bottom, so there's room
+        # for everything on a single line without stacking (which kept forcing the content to
+        # scroll when Status lived inside the narrow right column).
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self._eeg_badge, stretch=1)
+        row.addWidget(self._cam_badge, stretch=1)
+        row.addWidget(self._eog_badge, stretch=1)
+        row.addWidget(self._final_badge, stretch=1)
+        row.addWidget(self._tiles["record"], stretch=1)
 
         self._record_elapsed = QTime(0, 0, 0)
         self._record_timer = QTimer(self)

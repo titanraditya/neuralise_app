@@ -27,20 +27,25 @@ QToolTip {
 }
 
 #appTitle {
-    font-size: 22px;
+    font-size: 18px;
     font-weight: 700;
     color: #14181f;
 }
 
 #appSubtitle {
     color: #6b7585;
-    font-size: 12px;
+    font-size: 11px;
 }
 
 #clockLabel {
     color: #2f6fed;
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
+}
+
+#contactLabel {
+    color: #4b5563;
+    font-size: 11px;
 }
 
 #cameraView {
@@ -75,7 +80,7 @@ QToolTip {
 }
 
 #metricValue {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 700;
     color: #14181f;
 }
@@ -238,7 +243,7 @@ QPushButton {
     background-color: #ffffff;
     border: 1px solid #d7dde7;
     border-radius: 10px;
-    padding: 9px 18px;
+    padding: 7px 14px;
     color: #1c2430;
 }
 

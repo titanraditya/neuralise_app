@@ -9,6 +9,14 @@ CHANNEL_NAMES = ["TP9", "AF7", "AF8", "TP10"]
 SAMPLE_RATE = 256.0
 NOTCH_HZ = 50.0  # Indonesian mains frequency; use 60.0 elsewhere
 
+# EOG-from-EEG: AF7 sits on the left forehead just above the eye, so it picks up eye-blink /
+# eyelid-closure potentials (vertical EOG) as a strong low-frequency deflection — exactly what
+# EOGDrowsinessDetector's blink-rate/PERCLOS math needs. A single frontal channel is used (not a
+# bipolar AF7-AF8 pair, which would largely cancel the symmetric vertical blink signal).
+EOG_CHANNEL_INDEX = CHANNEL_NAMES.index("AF7")
+EOG_CHANNEL_NAME = "AF7"
+EOG_DISPLAY_LOWPASS_HZ = 10.0  # matches the LSL/OpenSignals EOG display filter (core/sources/eog_lsl.py)
+
 
 class MuseEEGSource(EEGSource):
     """Streams real EEG data from a Muse S Athena headband via BrainFlow."""
@@ -19,6 +27,7 @@ class MuseEEGSource(EEGSource):
         self._eeg_channels: list[int] = []
         self._sos_bp = butter(4, [1, 30], btype="band", fs=SAMPLE_RATE, output="sos")
         self._notch_b, self._notch_a = iirnotch(NOTCH_HZ, 30, fs=SAMPLE_RATE)
+        self._sos_eog = butter(4, EOG_DISPLAY_LOWPASS_HZ, btype="low", fs=SAMPLE_RATE, output="sos")
 
     def start(self) -> None:
         params = BrainFlowInputParams()
@@ -74,3 +83,30 @@ class MuseEEGSource(EEGSource):
             return list(bands)
         except Exception:
             return None
+
+    # -- EOG derived from the AF7 frontal electrode (see EOG_CHANNEL_INDEX comment above) --
+
+    @property
+    def supports_eog(self) -> bool:
+        return True
+
+    @property
+    def eog_channel_name(self) -> str:
+        return EOG_CHANNEL_NAME
+
+    @property
+    def eog_channel_indices(self) -> tuple[int, ...]:
+        return (EOG_CHANNEL_INDEX,)
+
+    def derive_eog(self, samples: np.ndarray) -> np.ndarray | None:
+        # samples is (n_channels, n_samples) in CHANNEL_NAMES order (see get_samples).
+        if samples.shape[0] <= EOG_CHANNEL_INDEX:
+            return None
+        return samples[EOG_CHANNEL_INDEX]
+
+    def filter_eog_for_display(self, segment: np.ndarray) -> np.ndarray:
+        try:
+            y = sosfiltfilt(self._sos_eog, segment)
+        except ValueError:
+            y = segment  # segment shorter than the filter padding — fall back to raw
+        return y - y.mean()  # center on 0 without a high-pass's window-long edge transient

@@ -41,11 +41,19 @@ class _EEGWorker(QThread):
     while EEG was connected.
     """
 
-    connected = Signal(list)  # channel_names
+    connected = Signal(list, bool, str, float)  # channel_names, eog_supported, eog_channel_name, eog_sample_rate
     connect_failed = Signal(str)
     frame_ready = Signal(object, object)  # display_segments: list[np.ndarray], contact_ok: list[bool]
     bands_ready = Signal(object)  # bands: list[float] (delta..gamma)
     status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
+
+    # Muse-EOG: a standalone EOG modality derived from the headset's frontal electrode (see
+    # EEGSource.derive_eog). It rides this same board acquisition rather than a second BrainFlow
+    # session — get_board_data() drains the ring buffer, so two consumers would steal each other's
+    # samples. Reported standalone; never feeds the camera+EEG OR-rule in status_panel.py.
+    museeog_frame_ready = Signal(object)  # display_segment: np.ndarray (frontal channel)
+    museeog_metrics_ready = Signal(float, float)  # blink_rate (per min), eog_perclos (fraction)
+    museeog_status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
 
     def __init__(self, source: EEGSource, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -55,6 +63,13 @@ class _EEGWorker(QThread):
         self._calibration_active = False
         self._recorder: EEGRecorder | None = None
         self._recording = False
+
+        # Muse-EOG (created in run() once the source's sample rate is known, and only if the
+        # source can derive an EOG channel at all).
+        self._eog_detector: EOGDrowsinessDetector | None = None
+        self._museeog_calibration_active = False
+        self._museeog_recorder: EOGRecorder | None = None
+        self._museeog_recording = False
 
     # -- called directly from the GUI thread; same plain-flag pattern as CameraThread --
 
@@ -74,6 +89,23 @@ class _EEGWorker(QThread):
             self._recorder.stop()
             self._recorder = None
 
+    def start_museeog_calibration(self) -> None:
+        if self._eog_detector is not None:
+            self._eog_detector.reset()
+        self._museeog_calibration_active = True
+
+    def start_museeog_recording(self, path: str | Path) -> None:
+        recorder = EOGRecorder()
+        recorder.start(path)
+        self._museeog_recorder = recorder
+        self._museeog_recording = True
+
+    def stop_museeog_recording(self) -> None:
+        self._museeog_recording = False
+        if self._museeog_recorder is not None:
+            self._museeog_recorder.stop()
+            self._museeog_recorder = None
+
     def stop(self) -> None:
         self._running = False
         self.wait()  # blocks until run()'s finally (source.stop()) has actually completed
@@ -86,13 +118,23 @@ class _EEGWorker(QThread):
             return
 
         self._running = True
-        self.connected.emit(list(self._source.channel_names))
+        self.connected.emit(
+            list(self._source.channel_names),
+            self._source.supports_eog,
+            self._source.eog_channel_name,
+            self._source.sample_rate,
+        )
 
         window_points = int(EEG_WINDOW_SECONDS * self._source.sample_rate)
         buffers = [np.zeros(window_points, dtype=np.float32) for _ in self._source.channel_names]
         samples_seen = 0
         poll_count = 0
         contact_ok = [True] * len(buffers)
+
+        # Muse-EOG rides this same acquisition (see the museeog_* signal comment above).
+        if self._source.supports_eog:
+            self._eog_detector = EOGDrowsinessDetector(sample_rate=self._source.sample_rate)
+        eog_buffer = np.zeros(window_points, dtype=np.float32)
 
         try:
             while self._running:
@@ -101,6 +143,12 @@ class _EEGWorker(QThread):
                     samples_seen += samples.shape[1]
                     for i in range(len(buffers)):
                         buffers[i] = np.concatenate([buffers[i], samples[i]])[-len(buffers[i]):]
+
+                    if self._eog_detector is not None:
+                        eog_chunk = self._source.derive_eog(samples)
+                        if eog_chunk is not None:
+                            eog_buffer = np.concatenate([eog_buffer, eog_chunk])[-len(eog_buffer):]
+                            self._classify_museeog(eog_chunk, contact_ok)
 
                 # Same warm-up guard as before: don't trust check_contact/filter_for_display on
                 # a still mostly-zero buffer right after connecting.
@@ -121,13 +169,46 @@ class _EEGWorker(QThread):
                         contact_ok = [True] * len(buffers)
                         display_segments = list(buffers)
                     self.frame_ready.emit(display_segments, contact_ok)
+                    if self._eog_detector is not None:
+                        self.museeog_frame_ready.emit(self._source.filter_eog_for_display(eog_buffer))
 
                 if warmed_up and poll_count % BAND_UPDATE_EVERY_N_POLLS == 0:
                     self._emit_bands(buffers, contact_ok)
+                    if self._eog_detector is not None:
+                        self.museeog_metrics_ready.emit(
+                            self._eog_detector.blink_rate(), self._eog_detector.perclos()
+                        )
 
                 self.msleep(EEG_POLL_MS)
         finally:
             self._source.stop()
+
+    def _classify_museeog(self, eog_chunk: np.ndarray, contact_ok: list[bool]) -> None:
+        """Feed one frontal-channel EOG chunk to the detector and record a row while recording.
+        Classification (blink/PERCLOS accumulation) only runs once the user has started
+        calibration — same manual gating as EEG band power above."""
+        if self._museeog_calibration_active:
+            status = self._eog_detector.update(eog_chunk)
+            detail = (
+                f"{int(self._eog_detector.calibration_seconds_left())}s"
+                if status == "calibrating"
+                else ""
+            )
+            self.museeog_status_ready.emit(status, detail)
+        else:
+            status = "idle"
+
+        if self._museeog_recording and self._museeog_recorder is not None:
+            indices = self._source.eog_channel_indices
+            eog_contact = all(contact_ok[i] for i in indices) if indices else True
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self._museeog_recorder.write_row(
+                ts,
+                self._eog_detector.blink_rate(),
+                self._eog_detector.perclos(),
+                status,
+                contact_ok=eog_contact,
+            )
 
     def _emit_bands(self, buffers: list[np.ndarray], contact_ok: list[bool]) -> None:
         good_idx = [i for i, ok in enumerate(contact_ok) if ok]
@@ -217,7 +298,6 @@ class _EOGWorker(QThread):
         window_points = max(int(EOG_WINDOW_SECONDS * self._source.sample_rate), 1)
         buffer = np.zeros(window_points, dtype=np.float32)
         poll_count = 0
-        samples_seen = 0  # TEMP diagnostic: total samples pulled from the source so far
 
         try:
             while self._running:
@@ -225,7 +305,6 @@ class _EOGWorker(QThread):
                 new_chunk = samples[0] if samples is not None and samples.shape[1] > 0 else None
 
                 if new_chunk is not None:
-                    samples_seen += len(new_chunk)
                     buffer = np.concatenate([buffer, new_chunk])[-len(buffer):]
 
                     # Drowsy/awake classification (and blink/PERCLOS accumulation) only runs
@@ -251,27 +330,9 @@ class _EOGWorker(QThread):
                 if poll_count % EOG_DISPLAY_UPDATE_EVERY_N_POLLS == 0:
                     self.frame_ready.emit(self._source.filter_for_display(buffer))
                 if poll_count % METRICS_UPDATE_EVERY_N_POLLS == 0:
-                    # TEMP diagnostic. zeros_in_buf>0 persistently => buffer never fills (bug).
-                    # disp_* is what's actually drawn: tiny range => flat (filter working, little
-                    # real EOG); large range => the rising-curve shape we're chasing. Remove later.
-                    disp = self._source.filter_for_display(buffer)
-                    zeros = int(np.count_nonzero(buffer == 0.0))
-                    print(
-                        f"[EOG diag] t={poll_count * EOG_POLL_MS / 1000:.0f}s "
-                        f"samples_seen={samples_seen} zeros_in_buf={zeros}/{len(buffer)} "
-                        f"buffer_std={float(np.std(buffer)):.3f} "
-                        f"disp_std={float(np.std(disp)):.3f} "
-                        f"disp_range=[{float(disp.min()):.2f},{float(disp.max()):.2f}]",
-                        flush=True,
-                    )
                     self.metrics_ready.emit(self._detector.blink_rate(), self._detector.perclos())
 
                 self.msleep(EOG_POLL_MS)
-        except Exception:  # noqa: BLE001 - TEMP diagnostic: surface an otherwise-silent thread crash
-            import traceback
-
-            print("[EOG diag] worker loop crashed:", flush=True)
-            traceback.print_exc()
         finally:
             self._source.stop()
 
@@ -295,6 +356,13 @@ class DeviceManager(QObject):
     eeg_connected_changed = Signal(bool)  # True after a successful connect, False on disconnect
     eeg_connect_failed = Signal(str)  # error message
 
+    # Muse-EOG — EOG derived from the EEG headset's frontal electrode, so it has no connect/
+    # disconnect of its own: it comes and goes with the EEG connection (see connect_eeg). Its
+    # availability is surfaced via eeg_connected_changed + the museeog_* properties below.
+    museeog_frame_ready = Signal(object)  # display_segment: np.ndarray (frontal channel)
+    museeog_metrics_ready = Signal(float, float)  # blink_rate (per min), eog_perclos (fraction)
+    museeog_status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
+
     eog_frame_ready = Signal(object)  # display_segment: np.ndarray (channel A1 only)
     eog_metrics_ready = Signal(float, float)  # blink_rate (per min), eog_perclos (fraction)
     eog_status_ready = Signal(str, str)  # status ('calibrating'|'awake'|'drowsy'), detail text
@@ -311,6 +379,11 @@ class DeviceManager(QObject):
 
         self._eeg_worker: _EEGWorker | None = None
         self._eeg_channel_names: list[str] = []
+
+        # Muse-EOG availability/metadata, populated from the EEG worker's connected signal.
+        self._museeog_available = False
+        self._museeog_channel_name = ""
+        self._museeog_sample_rate = 0.0
 
         self._eog_worker: _EOGWorker | None = None
         self._eog_channel_names: list[str] = []
@@ -375,13 +448,21 @@ class DeviceManager(QObject):
         worker.frame_ready.connect(self.eeg_frame_ready)
         worker.bands_ready.connect(self.eeg_bands_ready)
         worker.status_ready.connect(self.eeg_status_ready)
+        worker.museeog_frame_ready.connect(self.museeog_frame_ready)
+        worker.museeog_metrics_ready.connect(self.museeog_metrics_ready)
+        worker.museeog_status_ready.connect(self.museeog_status_ready)
         worker.finished.connect(worker.deleteLater)
         self._eeg_worker = worker
         self.eeg_connecting_changed.emit(True)
         worker.start()
 
-    def _on_eeg_connected(self, channel_names: list[str]) -> None:
+    def _on_eeg_connected(
+        self, channel_names: list[str], eog_supported: bool, eog_channel_name: str, eog_sample_rate: float
+    ) -> None:
         self._eeg_channel_names = channel_names
+        self._museeog_available = eog_supported
+        self._museeog_channel_name = eog_channel_name
+        self._museeog_sample_rate = eog_sample_rate
         self.eeg_connecting_changed.emit(False)
         self.eeg_connected_changed.emit(True)
 
@@ -396,7 +477,36 @@ class DeviceManager(QObject):
         self._eeg_worker.stop()  # blocks until the acquisition loop + source.stop() finish
         self._eeg_worker = None
         self._eeg_channel_names = []
+        self._museeog_available = False
+        self._museeog_channel_name = ""
+        self._museeog_sample_rate = 0.0
         self.eeg_connected_changed.emit(False)
+
+    @property
+    def museeog_available(self) -> bool:
+        return self._museeog_available
+
+    @property
+    def museeog_channel_name(self) -> str:
+        return self._museeog_channel_name
+
+    @property
+    def museeog_sample_rate(self) -> float:
+        return self._museeog_sample_rate
+
+    def start_museeog_calibration(self) -> None:
+        """(Re-)run the 30s Muse-EOG baseline. Wired to the same 'Kalibrasi EEG' user action as
+        start_eeg_calibration() — one headset, one calibrate button for both its EEG and EOG."""
+        if self._eeg_worker is not None:
+            self._eeg_worker.start_museeog_calibration()
+
+    def start_museeog_recording(self, path: str | Path) -> None:
+        if self._eeg_worker is not None:
+            self._eeg_worker.start_museeog_recording(path)
+
+    def stop_museeog_recording(self) -> None:
+        if self._eeg_worker is not None:
+            self._eeg_worker.stop_museeog_recording()
 
     def start_eeg_calibration(self) -> None:
         """(Re-)run the 30s baseline, triggered only by an explicit user action (a dedicated

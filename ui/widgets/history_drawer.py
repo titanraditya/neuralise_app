@@ -53,6 +53,7 @@ class _SessionRow(QWidget):
         badges.addWidget(_badge("KAMERA", session.has_camera))
         badges.addWidget(_badge("EEG", session.has_eeg))
         badges.addWidget(_badge("EOG", session.has_eog))
+        badges.addWidget(_badge("EOG-MUSE", session.has_museeog))
         badges.addWidget(_badge("DASS-21", session.has_dass21))
         badges.addWidget(_badge("SART", session.has_sart))
         badges.addStretch(1)

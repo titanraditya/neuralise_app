@@ -30,7 +30,7 @@ class CameraPanel(QWidget):
         self._view = QLabel("No camera connected")
         self._view.setObjectName("cameraView")
         self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._view.setMinimumSize(360, 240)
+        self._view.setMinimumSize(300, 200)
         self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         apply_card_shadow(self._view)
 

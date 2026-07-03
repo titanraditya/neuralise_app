@@ -12,6 +12,18 @@ DROWSY_SECONDS = 5.0
 NORMAL_EAR = 0.32
 DROWSY_EAR = 0.15
 
+# Blink timing shared by MockEEGSource (frontal-channel EOG derived from the mock Muse stream)
+# and MockEOGSource (standalone A1 stream): blinks come faster and last longer during the same
+# drowsy stretch, so the blink-rate/EOG-PERCLOS analysis built on either has something to catch.
+BLINK_INTERVAL_NORMAL = 4.0
+BLINK_INTERVAL_DROWSY = 1.2
+BLINK_DURATION_NORMAL = 0.15
+BLINK_DURATION_DROWSY = 0.45
+
+
+def _blink_pulse(t: np.ndarray, center: float, sigma: float) -> np.ndarray:
+    return np.exp(-0.5 * ((t - center) / sigma) ** 2)
+
 
 class MockCameraSource(CameraSource):
     """Generates a synthetic animated frame so the camera panel has something to render."""
@@ -62,10 +74,20 @@ class MockCameraSource(CameraSource):
         return ear_left, ear_right, ear_avg
 
 
+# Frontal-channel blink deflection amplitude — large vs the ~unit-scale sine/noise so the derived
+# mock Muse-EOG clears EOGDrowsinessDetector's mean±3·std closure threshold.
+EOG_BLINK_AMPLITUDE = 5.0
+
+
 class MockEEGSource(EEGSource):
-    """Generates a synthetic multi-channel signal (sine mix + noise) standing in for a real headset."""
+    """Generates a synthetic multi-channel signal (sine mix + noise) standing in for a real headset.
+
+    The frontal channel (_EOG_INDEX, standing in for the Muse AF7 electrode) also carries periodic
+    blink deflections so the Muse-EOG derived from it in DeviceManager has real blinks to detect.
+    """
 
     _CHANNELS = ["Fp1", "Fp2", "O1", "O2"]
+    _EOG_INDEX = 1  # Fp2 stands in for Muse's AF7 — the frontal channel Muse-EOG is derived from
     _SAMPLE_RATE = 256.0
 
     def __init__(self) -> None:
@@ -73,11 +95,15 @@ class MockEEGSource(EEGSource):
         self._t0 = 0.0
         self._last_t = 0.0
         self._rng = np.random.default_rng()
+        self._next_blink_at = 0.0
+        self._active_blinks: list[tuple[float, float]] = []
 
     def start(self) -> None:
         self._running = True
         self._t0 = time.time()
         self._last_t = 0.0
+        self._next_blink_at = BLINK_INTERVAL_NORMAL
+        self._active_blinks = []
 
     def stop(self) -> None:
         self._running = False
@@ -110,7 +136,46 @@ class MockEEGSource(EEGSource):
             noise = self._rng.normal(0, 0.2, n_new)
             samples[ch] = alpha + theta + noise
 
+        samples[self._EOG_INDEX] += self._blink_train(t)
         return samples
+
+    def _blink_train(self, t: np.ndarray) -> np.ndarray:
+        """Gaussian blink deflections on the frontal channel, faster/longer during the drowsy
+        stretch (same cycle as MockCameraSource.get_ear), scheduled the same way as MockEOGSource."""
+        now = t[-1]
+        in_drowsy_stretch = (now % CYCLE_SECONDS) > (CYCLE_SECONDS - DROWSY_SECONDS)
+        blink_duration = BLINK_DURATION_DROWSY if in_drowsy_stretch else BLINK_DURATION_NORMAL
+        blink_interval = BLINK_INTERVAL_DROWSY if in_drowsy_stretch else BLINK_INTERVAL_NORMAL
+        sigma = blink_duration / 2.5
+
+        while self._next_blink_at < t[-1] + 4 * sigma:
+            self._active_blinks.append((self._next_blink_at, sigma))
+            self._next_blink_at += blink_interval
+
+        pulse = np.zeros_like(t)
+        for center, b_sigma in self._active_blinks:
+            pulse += EOG_BLINK_AMPLITUDE * _blink_pulse(t, center, b_sigma)
+
+        cutoff = t[0] - 4 * sigma
+        self._active_blinks = [(c, s) for c, s in self._active_blinks if c + 4 * s >= cutoff]
+        return pulse.astype(np.float32)
+
+    @property
+    def supports_eog(self) -> bool:
+        return True
+
+    @property
+    def eog_channel_name(self) -> str:
+        return self._CHANNELS[self._EOG_INDEX]
+
+    @property
+    def eog_channel_indices(self) -> tuple[int, ...]:
+        return (self._EOG_INDEX,)
+
+    def derive_eog(self, samples: np.ndarray) -> np.ndarray | None:
+        if samples.shape[0] <= self._EOG_INDEX:
+            return None
+        return samples[self._EOG_INDEX]
 
     def band_powers(self, segments: np.ndarray, good_channels: list[int]) -> list[float] | None:
         """Synthetic [delta, theta, alpha, beta, gamma], with theta+alpha spiking on the same
@@ -134,13 +199,7 @@ class MockEEGSource(EEGSource):
         return [delta, theta, alpha, beta, gamma]
 
 
-# Blinks come faster and last longer during the same drowsy stretch as MockCameraSource/
-# MockEEGSource, so blink-rate/EOG-PERCLOS analysis built on top of this has something to catch.
 EOG_SAMPLE_RATE = 200.0
-BLINK_INTERVAL_NORMAL = 4.0
-BLINK_INTERVAL_DROWSY = 1.2
-BLINK_DURATION_NORMAL = 0.15
-BLINK_DURATION_DROWSY = 0.45
 
 
 class MockEOGSource(EOGSource):
@@ -200,13 +259,9 @@ class MockEOGSource(EOGSource):
 
         signal = self._rng.normal(0, 0.02, n_new)
         for center, b_sigma in self._active_blinks:
-            signal += self._blink_pulse(t, center, b_sigma)
+            signal += _blink_pulse(t, center, b_sigma)
 
         cutoff = t[0] - 4 * sigma
         self._active_blinks = [(c, s) for c, s in self._active_blinks if c + 4 * s >= cutoff]
 
         return signal.reshape(1, -1).astype(np.float32)
-
-    @staticmethod
-    def _blink_pulse(t: np.ndarray, center: float, sigma: float) -> np.ndarray:
-        return np.exp(-0.5 * ((t - center) / sigma) ** 2)

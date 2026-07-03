@@ -9,7 +9,7 @@ CHANNEL_COLORS = ["#2f6fed", "#1f9d55", "#d68910", "#d6453d"]
 NO_CONTACT_COLOR = "#aab2c0"
 CHANNEL_SPACING = 6.0
 BAND_NAMES = ["Delta", "Theta", "Alpha", "Beta", "Gamma"]
-NOT_CONNECTED_MESSAGE = 'EEG belum terhubung — klik "Connect EEG" untuk mulai streaming.'
+NOT_CONNECTED_MESSAGE = 'EEG belum terhubung —\nklik "Connect EEG" untuk mulai streaming.'
 
 
 class EEGPanel(QWidget):
@@ -24,6 +24,9 @@ class EEGPanel(QWidget):
         self._channel_names: list[str] = []
         self._curves: list[pg.PlotDataItem] = []
         self._contact_labels: list[QLabel] = []
+        # Last-seen contact state per channel; None = "not drawn yet". Used to avoid rebuilding a
+        # QPen + restyling the label on every single frame — only when contact actually flips.
+        self._contact_state: list[bool | None] = []
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -37,7 +40,7 @@ class EEGPanel(QWidget):
 
         self._plot = pg.PlotWidget(background="#ffffff")
         self._plot.setObjectName("eegPlot")
-        self._plot.setMinimumHeight(130)
+        self._plot.setMinimumHeight(90)
         self._plot.showGrid(x=True, y=False, alpha=0.15)
         self._plot.setLabel("bottom", "time", units="s")
         self._plot.getAxis("left").hide()
@@ -48,8 +51,8 @@ class EEGPanel(QWidget):
         self._band_plot = pg.PlotWidget(background="#ffffff")
         self._band_plot.setObjectName("eegPlot")
         apply_card_shadow(self._band_plot)
-        self._band_plot.setMaximumHeight(90)
-        self._band_plot.setMinimumHeight(70)
+        self._band_plot.setMaximumHeight(70)
+        self._band_plot.setMinimumHeight(46)
         self._band_plot.setMouseEnabled(x=False, y=False)
         self._band_plot.setLabel("left", "Band power")
         self._band_plot.getAxis("left").enableAutoSIPrefix(False)
@@ -62,7 +65,12 @@ class EEGPanel(QWidget):
         self._placeholder = QLabel(NOT_CONNECTED_MESSAGE)
         self._placeholder.setObjectName("cameraView")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setWordWrap(True)
+        # No word wrap on purpose: a word-wrapped QLabel has heightForWidth, and once this
+        # placeholder becomes the visible stacked page that propagates up and makes the parent
+        # layout size the panel by heightForWidth instead of the stretch factors — which squeezed
+        # the EEG plot and forced the whole screen to scroll while a device was disconnected. The
+        # message is pre-broken with an explicit newline instead.
+        self._placeholder.setWordWrap(False)
         apply_card_shadow(self._placeholder)
 
         self._live_widget = QWidget()
@@ -89,6 +97,7 @@ class EEGPanel(QWidget):
         self._curves = []
         self._band_bar.setOpts(height=[0] * len(BAND_NAMES))
         self._channel_names = list(channel_names)
+        self._contact_state = [None] * len(self._channel_names)
 
         if not self._channel_names:
             self._stack.setCurrentWidget(self._placeholder)
@@ -114,12 +123,16 @@ class EEGPanel(QWidget):
             seg = segments[i]
             ok = contact_ok[i]
             offset = (len(self._curves) - i) * CHANNEL_SPACING
-            color = CHANNEL_COLORS[i % len(CHANNEL_COLORS)] if ok else NO_CONTACT_COLOR
-            curve.setPen(pg.mkPen(color, width=1.5))
+            # Only touch the pen/label when contact actually flips — rebuilding a QPen and
+            # restyling the label on every frame (10 Hz x 4 channels) was needless churn.
+            if ok != self._contact_state[i]:
+                color = CHANNEL_COLORS[i % len(CHANNEL_COLORS)] if ok else NO_CONTACT_COLOR
+                curve.setPen(pg.mkPen(color, width=1.5))
+                self._set_contact_label(i, ok)
+                self._contact_state[i] = ok
             # Keep drawing the real (filtered) line even on bad contact — only the color/label
             # changes — so the trace never just goes flat while the headset is being adjusted.
             curve.setData(seg + offset)
-            self._set_contact_label(i, ok)
 
     def update_bands(self, bands: list) -> None:
         self._band_bar.setOpts(height=list(bands))
@@ -137,7 +150,7 @@ class EEGPanel(QWidget):
         name = self._channel_names[index]
         if ok:
             label.setText(name)
-            label.setStyleSheet("color: #1f9d55; font-weight: 600;")
+            label.setStyleSheet("color: #1f9d55; font-weight: 600; font-size: 11px;")
         else:
             label.setText(f"{name} – NO CONTACT")
-            label.setStyleSheet("color: #d6453d; font-weight: 600;")
+            label.setStyleSheet("color: #d6453d; font-weight: 600; font-size: 11px;")

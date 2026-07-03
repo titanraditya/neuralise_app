@@ -69,6 +69,9 @@ class MainWindow(QMainWindow):
         dm.eeg_connecting_changed.connect(self._screen.device_row.set_eeg_connecting)
         dm.eeg_connected_changed.connect(self._on_eeg_connected_changed)
         dm.eeg_connect_failed.connect(self._on_eeg_connect_failed)
+        dm.museeog_frame_ready.connect(self._screen.museeog_panel.update_frame)
+        dm.museeog_metrics_ready.connect(self._screen.museeog_panel.update_metrics)
+        dm.museeog_status_ready.connect(self._screen.museeog_panel.set_status)
         dm.eog_frame_ready.connect(self._screen.eog_panel.update_frame)
         dm.eog_metrics_ready.connect(self._screen.eog_panel.update_metrics)
         dm.eog_status_ready.connect(self._screen.eog_panel.set_status)
@@ -108,18 +111,28 @@ class MainWindow(QMainWindow):
 
     def _on_eeg_connected_changed(self, connected: bool) -> None:
         self._screen.device_row.set_eeg_connected(connected)
+        dm = self._device_manager
         if connected:
-            self._screen.eeg_panel.set_channels(self._device_manager.eeg_channel_names)
+            self._screen.eeg_panel.set_channels(dm.eeg_channel_names)
+            # Muse-EOG rides the EEG connection — activate its panel too if this headset can
+            # derive an EOG channel from a frontal electrode.
+            if dm.museeog_available:
+                self._screen.museeog_panel.set_channels(
+                    [dm.museeog_channel_name], dm.museeog_sample_rate
+                )
         else:
             self._screen.eeg_panel.set_channels([])
             self._screen.status_panel.set_eeg_status("idle")
+            self._screen.museeog_panel.set_channels([])
 
     def _on_eeg_connect_failed(self, message: str) -> None:
         self._screen.device_row.set_eeg_connected(False)
         QMessageBox.critical(self, "EEG Connection Error", message)
 
     def _on_calibrate_eeg(self) -> None:
+        # One headset, one button: calibrate both the EEG-drowsiness and the Muse-EOG baselines.
         self._device_manager.start_eeg_calibration()
+        self._device_manager.start_museeog_calibration()
 
     def _on_eeg_frame(self, _segments, contact_ok) -> None:
         if not contact_ok:
@@ -194,6 +207,10 @@ class MainWindow(QMainWindow):
             if dm.eeg_connected:
                 dm.start_eeg_recording(self._session.eeg_csv_path)
                 self._session.has_eeg = True
+                # Muse-EOG rides the Muse board — record it as its own file when available.
+                if dm.museeog_available:
+                    dm.start_museeog_recording(self._session.museeog_csv_path)
+                    self._session.has_museeog = True
             if dm.eog_connected:
                 dm.start_eog_recording(self._session.eog_csv_path)
                 self._session.has_eog = True
@@ -202,6 +219,7 @@ class MainWindow(QMainWindow):
         else:
             dm.stop_camera_recording()
             dm.stop_eeg_recording()
+            dm.stop_museeog_recording()
             dm.stop_eog_recording()
             self._screen.status_panel.stop_record_timer()
         self._refresh_history()
@@ -211,6 +229,7 @@ class MainWindow(QMainWindow):
             return
         self._device_manager.stop_camera_recording()
         self._device_manager.stop_eeg_recording()
+        self._device_manager.stop_museeog_recording()
         self._device_manager.stop_eog_recording()
         self._screen.status_panel.stop_record_timer()
         self._session.end()  # writer flushed+closed by stop_*_recording() above before this point

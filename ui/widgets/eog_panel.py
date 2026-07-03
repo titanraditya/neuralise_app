@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QStackedWidget, 
 
 from ui.effects import apply_card_shadow
 
-NOT_CONNECTED_MESSAGE = 'EOG belum terhubung — klik "Connect EOG" untuk mulai streaming.'
+NOT_CONNECTED_MESSAGE = 'EOG belum terhubung —\nklik "Connect EOG"\nuntuk mulai streaming.'
 STATUS_COLORS = {
     "idle": "#6b7585",
     "calibrating": "#d97706",
@@ -31,11 +31,12 @@ class EOGPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._sample_rate = 0.0  # set by set_channels(); 0 => plot against sample index
+        self._x: np.ndarray | None = None  # cached time axis, rebuilt only when length changes
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._plot = pg.PlotWidget(background="#ffffff")
         self._plot.setObjectName("eegPlot")
-        self._plot.setMinimumHeight(110)
+        self._plot.setMinimumHeight(80)
         self._plot.showGrid(x=True, y=False, alpha=0.15)
         self._plot.setLabel("bottom", "time", units="s")
         self._plot.getAxis("left").hide()
@@ -45,12 +46,17 @@ class EOGPanel(QWidget):
         self._curve.setDownsampling(auto=True, method="peak")
         self._curve.setClipToView(True)
 
-        self._blink_label = QLabel("Blink rate: –")
-        self._perclos_label = QLabel("EOG-PERCLOS: –")
+        # Short labels + the shared compact "contactLabel" font size — these panels are narrow now
+        # (two side by side), so the metrics row has to stay on one line.
+        self._blink_label = QLabel("Blink: –")
+        self._blink_label.setObjectName("contactLabel")
+        self._perclos_label = QLabel("PERCLOS: –")
+        self._perclos_label.setObjectName("contactLabel")
         self._status_label = QLabel("Idle")
         self._status_label.setObjectName("contactLabel")
 
         metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(6)
         metrics_row.addWidget(self._blink_label)
         metrics_row.addWidget(self._perclos_label)
         metrics_row.addStretch(1)
@@ -61,7 +67,12 @@ class EOGPanel(QWidget):
         self._placeholder = QLabel(NOT_CONNECTED_MESSAGE)
         self._placeholder.setObjectName("cameraView")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setWordWrap(True)
+        # No word wrap on purpose: a word-wrapped QLabel has heightForWidth, and once this
+        # placeholder becomes the visible stacked page that propagates up and makes the parent
+        # layout size the panel by heightForWidth instead of the stretch factors — which in this
+        # narrow column squeezed the EEG plot and forced the whole screen to scroll while EOG was
+        # disconnected. The message is pre-broken with explicit newlines instead.
+        self._placeholder.setWordWrap(False)
         apply_card_shadow(self._placeholder)
 
         self._live_widget = QWidget()
@@ -82,11 +93,14 @@ class EOGPanel(QWidget):
     def set_channels(self, channel_names: list[str], sample_rate: float = 0.0) -> None:
         """(Re)build the view for a fresh EOG connection. Call with [] on disconnect."""
         self._sample_rate = sample_rate
+        self._x = None
         self._curve.setData([])
-        self._blink_label.setText("Blink rate: –")
-        self._perclos_label.setText("EOG-PERCLOS: –")
+        self._blink_label.setText("Blink: –")
+        self._perclos_label.setText("PERCLOS: –")
         self._status_label.setText("Idle")
-        self._status_label.setStyleSheet(f"color: {STATUS_COLORS['idle']}; font-weight: 600;")
+        self._status_label.setStyleSheet(
+            f"color: {STATUS_COLORS['idle']}; font-weight: 600; font-size: 11px;"
+        )
         if not channel_names:
             self._stack.setCurrentWidget(self._placeholder)
             return
@@ -95,20 +109,22 @@ class EOGPanel(QWidget):
     def update_frame(self, segment) -> None:
         if self._sample_rate > 0:
             # Plot against real seconds (0..window) so the bottom axis reads in s, not the
-            # raw sample index that pyqtgraph was SI-prefixing into "ks".
-            x = np.arange(len(segment)) / self._sample_rate
-            self._curve.setData(x, segment)
+            # raw sample index that pyqtgraph was SI-prefixing into "ks". The axis only changes
+            # when the segment length does, so cache it instead of rebuilding it every frame.
+            if self._x is None or len(self._x) != len(segment):
+                self._x = np.arange(len(segment)) / self._sample_rate
+            self._curve.setData(self._x, segment)
         else:
             self._curve.setData(segment)
 
     def update_metrics(self, blink_rate: float, eog_perclos: float) -> None:
-        self._blink_label.setText(f"Blink rate: {blink_rate:.1f}/min")
-        self._perclos_label.setText(f"EOG-PERCLOS: {eog_perclos * 100:.1f}%")
+        self._blink_label.setText(f"Blink: {blink_rate:.1f}/min")
+        self._perclos_label.setText(f"PERCLOS: {eog_perclos * 100:.1f}%")
 
     def set_status(self, status: str, detail: str = "") -> None:
         label = STATUS_LABELS.get(status, status)
         text = f"{label} ({detail})" if detail else label
         self._status_label.setText(text)
         self._status_label.setStyleSheet(
-            f"color: {STATUS_COLORS.get(status, '#6b7585')}; font-weight: 600;"
+            f"color: {STATUS_COLORS.get(status, '#6b7585')}; font-weight: 600; font-size: 11px;"
         )
