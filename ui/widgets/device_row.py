@@ -55,6 +55,20 @@ class DeviceRow(QWidget):
         layout.addWidget(self._calibrate_eog_btn)
         layout.addStretch(1)
 
+    def apply_features(self, features: dict[str, bool]) -> None:
+        """Hide the connect/calibrate controls of modalities left unchecked in the
+        feature-select dialog. Muse-EOG has no controls of its own here — it rides the EEG
+        connection (its calibration is bundled into "Kalibrasi EEG")."""
+        camera = features.get("camera", True)
+        eeg = features.get("eeg", True)
+        eog = features.get("eog", True)
+        self._camera_btn.setVisible(camera)
+        self._eeg_btn.setVisible(eeg)
+        self._calibrate_btn.setVisible(eeg)
+        self._eeg_contact_label.setVisible(eeg)
+        self._eog_btn.setVisible(eog)
+        self._calibrate_eog_btn.setVisible(eog)
+
     def set_camera_connected(self, connected: bool) -> None:
         self._camera_btn.blockSignals(True)
         self._camera_btn.setChecked(connected)

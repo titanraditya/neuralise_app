@@ -3,12 +3,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QProcess, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
-from PySide6.QtWidgets import QMainWindow, QMessageBox
+from PySide6.QtWidgets import QDialog, QMainWindow, QMessageBox
 
 from core.device_manager import DeviceManager
 from core.session import Session
-from core.settings import get_warn_missing_dass21, set_warn_missing_dass21
+from core.settings import (
+    get_enabled_features,
+    get_warn_missing_dass21,
+    set_enabled_features,
+    set_warn_missing_dass21,
+)
 from ui.dialogs.dass21_dialog import DASS21Dialog
+from ui.dialogs.feature_select_dialog import FeatureSelectDialog
 from ui.dialogs.sart_dialog import SARTDialog
 from ui.screens.main_screen import MainScreen
 
@@ -16,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, mock: bool = False) -> None:
+    def __init__(self, mock: bool = False, features: dict[str, bool] | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Neuralise — Drowsiness Detection")
         self.resize(1200, 720)
@@ -24,6 +30,9 @@ class MainWindow(QMainWindow):
         self._device_manager = DeviceManager(use_mock=mock)
         self._session: Session | None = None
         self._report_processes: dict[str, QProcess] = {}
+        # Pilihan dari menu awal (FeatureSelectDialog di main.py); fallback ke QSettings agar
+        # MainWindow tetap bisa dibuat langsung (mis. dari tes) tanpa lewat dialog.
+        self._features = features if features is not None else get_enabled_features()
 
         self._screen = MainScreen()
         self.setCentralWidget(self._screen)
@@ -33,6 +42,7 @@ class MainWindow(QMainWindow):
         self._wire_device_manager()
         self._wire_control_strip()
         self._wire_history_drawer()
+        self._screen.apply_features(self._features)
 
     # ------------------------------------------------------------------
     # Menu — settings
@@ -45,6 +55,52 @@ class MainWindow(QMainWindow):
         self._warn_dass21_action.setChecked(get_warn_missing_dass21())
         self._warn_dass21_action.toggled.connect(set_warn_missing_dass21)
         settings_menu.addAction(self._warn_dass21_action)
+
+        choose_features_action = QAction("Pilih Fitur Monitoring…", self)
+        choose_features_action.triggered.connect(self._on_choose_features)
+        settings_menu.addAction(choose_features_action)
+
+    def _on_choose_features(self) -> None:
+        """Buka ulang menu awal untuk mengubah fitur yang dipakai tanpa restart. Diblokir saat
+        sesi aktif: mematikan modalitas di tengah perekaman akan meninggalkan recorder yang
+        tidak pernah di-flush/close."""
+        if self._session is not None:
+            QMessageBox.warning(
+                self,
+                "Sesi masih aktif",
+                "Selesaikan sesi dulu (klik \"Selesai\") sebelum mengubah fitur monitoring.",
+            )
+            return
+        dialog = FeatureSelectDialog(self._features, startup=False, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        features = dialog.selected_features()
+        set_enabled_features(features)
+        self._apply_features(features)
+
+    def _apply_features(self, features: dict[str, bool]) -> None:
+        dm = self._device_manager
+        # Putuskan dulu device milik fitur yang baru saja dimatikan — panel yang disembunyikan
+        # tidak boleh menyisakan akuisisi yang masih jalan di belakangnya.
+        if not features.get("camera", True) and dm.camera_connected:
+            self._screen.device_row.set_camera_connected(False)
+            self._on_camera_toggled(False)
+        if not features.get("eeg", True) and dm.eeg_connected:
+            dm.disconnect_eeg()  # eeg_connected_changed(False) membereskan device row + panel
+        if not features.get("eog", True) and dm.eog_connected:
+            dm.disconnect_eog()
+
+        # Muse-EOG menumpang koneksi EEG: saat baru diaktifkan dengan EEG yang sudah terhubung,
+        # panelnya perlu diisi metadata channel yang tadinya dilewati di _on_eeg_connected_changed.
+        if not features.get("museeog", True):
+            self._screen.museeog_panel.set_channels([])
+        elif dm.eeg_connected and dm.museeog_available:
+            self._screen.museeog_panel.set_channels(
+                [dm.museeog_channel_name], dm.museeog_sample_rate
+            )
+
+        self._features = features
+        self._screen.apply_features(features)
 
     # ------------------------------------------------------------------
     # Device row <-> DeviceManager (rig-level, persistent — independent of any Session)
@@ -115,8 +171,9 @@ class MainWindow(QMainWindow):
         if connected:
             self._screen.eeg_panel.set_channels(dm.eeg_channel_names)
             # Muse-EOG rides the EEG connection — activate its panel too if this headset can
-            # derive an EOG channel from a frontal electrode.
-            if dm.museeog_available:
+            # derive an EOG channel from a frontal electrode (and the feature was picked in
+            # the menu awal).
+            if dm.museeog_available and self._features.get("museeog", True):
                 self._screen.museeog_panel.set_channels(
                     [dm.museeog_channel_name], dm.museeog_sample_rate
                 )
@@ -130,9 +187,11 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "EEG Connection Error", message)
 
     def _on_calibrate_eeg(self) -> None:
-        # One headset, one button: calibrate both the EEG-drowsiness and the Muse-EOG baselines.
+        # One headset, one button: calibrate both the EEG-drowsiness and the Muse-EOG baselines
+        # (the latter only when the Muse-EOG feature was picked in the menu awal).
         self._device_manager.start_eeg_calibration()
-        self._device_manager.start_museeog_calibration()
+        if self._features.get("museeog", True):
+            self._device_manager.start_museeog_calibration()
 
     def _on_eeg_frame(self, _segments, contact_ok) -> None:
         if not contact_ok:
@@ -207,8 +266,9 @@ class MainWindow(QMainWindow):
             if dm.eeg_connected:
                 dm.start_eeg_recording(self._session.eeg_csv_path)
                 self._session.has_eeg = True
-                # Muse-EOG rides the Muse board — record it as its own file when available.
-                if dm.museeog_available:
+                # Muse-EOG rides the Muse board — record it as its own file when available
+                # (skipped when the feature was left unchecked in the menu awal).
+                if dm.museeog_available and self._features.get("museeog", True):
                     dm.start_museeog_recording(self._session.museeog_csv_path)
                     self._session.has_museeog = True
             if dm.eog_connected:

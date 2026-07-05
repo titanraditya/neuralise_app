@@ -112,6 +112,18 @@ class StatusPanel(QWidget):
         self._record_timer = QTimer(self)
         self._record_timer.timeout.connect(self._tick)
 
+    def apply_features(self, features: dict[str, bool]) -> None:
+        """Hide badges of modalities left unchecked in the feature-select dialog. Visibility
+        only — _fuse_status() is untouched: a hidden modality stays "idle", which the OR-rule
+        already treats as lowest priority. The EOG badge is fed by the BITalino EOG (Muse-EOG
+        reports inside its own panel), so it follows the "eog" flag."""
+        camera = features.get("camera", True)
+        eeg = features.get("eeg", True)
+        self._cam_badge.setVisible(camera)
+        self._eeg_badge.setVisible(eeg)
+        self._eog_badge.setVisible(features.get("eog", True))
+        self._final_badge.setVisible(camera or eeg)
+
     def set_eeg_status(self, status: str, detail: str = "") -> None:
         self._eeg_badge.set_status(status, detail)
         self._recompute_final()

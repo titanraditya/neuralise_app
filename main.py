@@ -3,8 +3,10 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
+from core.settings import get_enabled_features, set_enabled_features
+from ui.dialogs.feature_select_dialog import FeatureSelectDialog
 from ui.main_window import MainWindow
 
 
@@ -23,7 +25,15 @@ def main() -> None:
     qss_path = Path(__file__).parent / "styles" / "light_theme.qss"
     app.setStyleSheet(qss_path.read_text())
 
-    window = MainWindow(mock=args.mock)
+    # Menu awal: pilih fitur yang dipakai di panel monitoring untuk run ini. Pilihan tersimpan
+    # di QSettings jadi centang default mengikuti run sebelumnya; batal berarti keluar.
+    feature_dialog = FeatureSelectDialog(get_enabled_features(), startup=True)
+    if feature_dialog.exec() != QDialog.DialogCode.Accepted:
+        sys.exit(0)
+    features = feature_dialog.selected_features()
+    set_enabled_features(features)
+
+    window = MainWindow(mock=args.mock, features=features)
     window.show()
 
     sys.exit(app.exec())

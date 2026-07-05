@@ -69,24 +69,35 @@ class MainScreen(QWidget):
 
         content = QHBoxLayout()
         content.setSpacing(10)
-        content.addWidget(_section("Camera", self.camera_panel), stretch=1)
+        # Section wrappers are kept as attributes so apply_features() can hide the modalities
+        # that were left unchecked in the feature-select dialog (menu awal).
+        self._camera_section = _section("Camera", self.camera_panel)
+        content.addWidget(self._camera_section, stretch=1)
 
         # The two single-trace EOG panels sit side by side rather than stacked: the screen's
         # tight dimension is height, so giving each modality its own vertical slot no longer
         # fits on one screen. Horizontally there's room to spare.
+        self._eog_section = _section("EOG · BITalino", self.eog_panel)
+        self._museeog_section = _section("EOG · Muse (AF7)", self.museeog_panel)
         eog_row = QHBoxLayout()
         eog_row.setContentsMargins(0, 0, 0, 0)
         eog_row.setSpacing(8)
-        eog_row.addWidget(_section("EOG · BITalino", self.eog_panel), stretch=1)
-        eog_row.addWidget(_section("EOG · Muse (AF7)", self.museeog_panel), stretch=1)
-        eog_row_widget = QWidget()
-        eog_row_widget.setLayout(eog_row)
+        eog_row.addWidget(self._eog_section, stretch=1)
+        eog_row.addWidget(self._museeog_section, stretch=1)
+        self._eog_row_widget = QWidget()
+        self._eog_row_widget.setLayout(eog_row)
 
+        self._eeg_section = _section("EEG Signal", self.eeg_panel)
         right_column = QVBoxLayout()
         right_column.setSpacing(6)
-        right_column.addWidget(_section("EEG Signal", self.eeg_panel), stretch=3)
-        right_column.addWidget(eog_row_widget, stretch=2)
-        content.addLayout(right_column, stretch=1)
+        right_column.addWidget(self._eeg_section, stretch=3)
+        right_column.addWidget(self._eog_row_widget, stretch=2)
+        # Wrapped in a QWidget (not addLayout) so the whole column — including its stretch
+        # share of the width — disappears when every modality inside it is disabled, letting
+        # the camera panel take the full width.
+        self._right_column_widget = QWidget()
+        self._right_column_widget.setLayout(right_column)
+        content.addWidget(self._right_column_widget, stretch=1)
 
         content_widget = QWidget()
         content_widget.setLayout(content)
@@ -107,6 +118,24 @@ class MainScreen(QWidget):
         root.setSpacing(12)
         root.addLayout(main_column, stretch=1)
         root.addWidget(self.history_drawer)
+
+    def apply_features(self, features: dict[str, bool]) -> None:
+        """Show only the modalities picked in the feature-select dialog. Purely visibility —
+        detection/fusion logic is untouched; a hidden modality simply stays idle."""
+        camera = features.get("camera", True)
+        eeg = features.get("eeg", True)
+        museeog = features.get("museeog", True) and eeg  # rides the EEG connection
+        eog = features.get("eog", True)
+
+        self._camera_section.setVisible(camera)
+        self._eeg_section.setVisible(eeg)
+        self._eog_section.setVisible(eog)
+        self._museeog_section.setVisible(museeog)
+        self._eog_row_widget.setVisible(eog or museeog)
+        self._right_column_widget.setVisible(eeg or eog or museeog)
+
+        self.device_row.apply_features(features)
+        self.status_panel.apply_features(features)
 
     def _build_header(self) -> QWidget:
         title_box = QVBoxLayout()
