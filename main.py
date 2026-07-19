@@ -11,6 +11,16 @@ from ui.main_window import MainWindow
 
 
 def main() -> None:
+    # Saat di-freeze jadi exe, GUI tidak bisa memanggil `sys.executable -m tools.report`
+    # (exe hasil PyInstaller mengabaikan -m). Sebagai gantinya GUI memanggil ulang exe ini
+    # dengan sentinel --run-report <session_dir>; di sini kita jalankan report worker lalu
+    # keluar — SEBELUM QApplication/dialog dibuat, supaya subprocess tidak ikut membuka UI.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--run-report":
+        from tools.report import render_session_report
+
+        render_session_report(sys.argv[2])
+        return
+
     parser = argparse.ArgumentParser(description="Neuralise drowsiness detection app")
     parser.add_argument(
         "--mock",

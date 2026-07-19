@@ -1,14 +1,16 @@
 """Pure post-hoc statistics over one recordings/<session_id>/ folder.
 
-No live state, no Qt, no hardware — just camera.csv + eeg.csv + meta.json in, a dict out.
-Per the task spec: invalid rows (face_detected=False / contact_ok=False) and the first
-`warmup_seconds` of session time are discarded before anything else is computed, then drowsy
-episodes are detected with a hysteresis debounce (onset needs >= N seconds above threshold to
-confirm, offset needs >= M seconds back below to confirm) — separately for camera (signal =
-PERCLOS) and EEG (signal = ratio_norm), plus an OR-rule fusion of the two.
+No live state, no Qt, no hardware — just camera.csv + eeg.csv + eog.csv + eog_muse.csv +
+meta.json in, a dict out. Per the task spec: invalid rows (face_detected=False /
+contact_ok=False) and the first `warmup_seconds` of session time are discarded before anything
+else is computed, then drowsy episodes are detected with a hysteresis debounce (onset needs
+>= N seconds above threshold to confirm, offset needs >= M seconds back below to confirm) —
+separately for camera (signal = PERCLOS), EEG (signal = ratio_norm), and each EOG modality
+(signal = eog_perclos), plus an OR-rule fusion of camera+EEG only (EOG stays standalone,
+matching the live status panel).
 
 Thresholds are reused from the already-tuned live detectors (camera/perclos.py,
-core/eeg_drowsiness.py), not retuned here.
+core/eeg_drowsiness.py, core/eog_drowsiness.py), not retuned here.
 """
 
 import bisect
@@ -19,6 +21,7 @@ from pathlib import Path
 from camera.perclos import DROWSY_THRESHOLD as PERCLOS_DROWSY_THRESHOLD
 from core.eeg_drowsiness import CALIBRATION_SECONDS as EEG_CALIBRATION_SECONDS
 from core.eeg_drowsiness import DROWSY_RATIO_MULTIPLIER as EEG_DROWSY_RATIO_THRESHOLD
+from core.eog_drowsiness import PERCLOS_DROWSY_THRESHOLD as EOG_PERCLOS_DROWSY_THRESHOLD
 
 WARMUP_SECONDS = 30.0
 HYSTERESIS_ON_SECONDS = 3.0
@@ -36,18 +39,25 @@ def summarize_session(
     perclos_threshold: float = PERCLOS_DROWSY_THRESHOLD,
     eeg_ratio_threshold: float = EEG_DROWSY_RATIO_THRESHOLD,
     eeg_calibration_seconds: float = EEG_CALIBRATION_SECONDS,
+    eog_perclos_threshold: float = EOG_PERCLOS_DROWSY_THRESHOLD,
 ) -> dict:
     session_dir = Path(session_dir)
     meta = json.loads((session_dir / "meta.json").read_text())
 
     cam_rows = _read_csv(session_dir / "camera.csv")
     eeg_rows = _read_csv(session_dir / "eeg.csv")
+    eog_rows = _read_csv(session_dir / "eog.csv")
+    museeog_rows = _read_csv(session_dir / "eog_muse.csv")
 
     cam_raw = _camera_samples(cam_rows)
     eeg_raw = _eeg_samples(eeg_rows)
+    eog_raw = _eog_samples(eog_rows)
+    museeog_raw = _eog_samples(museeog_rows)
 
     cam_series = _filter_valid(cam_raw, warmup_seconds)
     eeg_series, eeg_baseline = _eeg_ratio_norm(eeg_raw, warmup_seconds, eeg_calibration_seconds)
+    eog_series = _filter_valid(eog_raw, warmup_seconds)
+    museeog_series = _filter_valid(museeog_raw, warmup_seconds)
 
     cam_stats, cam_episodes = _series_stats(
         cam_series, perclos_threshold, hysteresis_on_seconds, hysteresis_off_seconds, "camera"
@@ -56,6 +66,19 @@ def summarize_session(
         eeg_series, eeg_ratio_threshold, hysteresis_on_seconds, hysteresis_off_seconds, "eeg"
     )
     eeg_stats["baseline"] = eeg_baseline
+
+    # EOG (BITalino) and Muse-EOG both record the live detector's already-calibrated
+    # eog_perclos, so no baseline recomputation is needed here (unlike the EEG ratio). Both are
+    # standalone modalities — deliberately kept out of the camera+EEG OR-rule fusion, mirroring
+    # the live behavior in ui/widgets/status_panel.py / core/eog_drowsiness.py.
+    eog_stats, eog_episodes = _series_stats(
+        eog_series, eog_perclos_threshold, hysteresis_on_seconds, hysteresis_off_seconds, "eog"
+    )
+    eog_stats["mean_blink_rate"] = _mean_blink_rate(eog_rows, warmup_seconds)
+    museeog_stats, museeog_episodes = _series_stats(
+        museeog_series, eog_perclos_threshold, hysteresis_on_seconds, hysteresis_off_seconds, "museeog"
+    )
+    museeog_stats["mean_blink_rate"] = _mean_blink_rate(museeog_rows, warmup_seconds)
 
     # Fusion OR-rule: forward-fill each modality's own above/below-threshold state onto the
     # union of both timelines, then run the same hysteresis detector over the boolean result.
@@ -75,14 +98,29 @@ def summarize_session(
 
     pct_face_valid = _pct_true([_to_bool(r.get("face_detected", "true")) for r in cam_rows])
     pct_contact_ok = _pct_true([_to_bool(r.get("contact_ok", "true")) for r in eeg_rows])
+    pct_eog_contact_ok = _pct_true([_to_bool(r.get("contact_ok", "true")) for r in eog_rows])
+    pct_museeog_contact_ok = _pct_true([_to_bool(r.get("contact_ok", "true")) for r in museeog_rows])
 
-    has_camera = bool(meta.get("has_camera"))
-    has_eeg = bool(meta.get("has_eeg"))
-    valid_session = (has_camera or has_eeg) and not (has_camera and not cam_series) and not (
-        has_eeg and not eeg_series
+    # Which modalities were part of this session — the meta has_* flags record what was
+    # actually recorded (feature picked in the menu awal AND device connected saat Rekam).
+    # Data-presence is OR-ed in as a fallback for folders whose meta predates a flag.
+    modalities = {
+        "camera": bool(meta.get("has_camera")) or bool(cam_series),
+        "eeg": bool(meta.get("has_eeg")) or bool(eeg_series),
+        "eog": bool(meta.get("has_eog")) or bool(eog_series),
+        "museeog": bool(meta.get("has_museeog")) or bool(museeog_series),
+    }
+    series_by_modality = {
+        "camera": cam_series, "eeg": eeg_series, "eog": eog_series, "museeog": museeog_series,
+    }
+    valid_session = any(modalities.values()) and all(
+        bool(series_by_modality[m]) for m, present in modalities.items() if present
     )
 
-    all_episodes = sorted(cam_episodes + eeg_episodes + fusion_episodes, key=lambda e: e["start_s"])
+    all_episodes = sorted(
+        cam_episodes + eeg_episodes + fusion_episodes + eog_episodes + museeog_episodes,
+        key=lambda e: e["start_s"],
+    )
 
     return {
         "session_id": meta.get("session_id", session_dir.name),
@@ -90,18 +128,23 @@ def summarize_session(
         "noise_condition": meta.get("noise_condition", ""),
         "started_at": meta.get("started_at"),
         "ended_at": meta.get("ended_at"),
+        "modalities": modalities,
         "camera": cam_stats,
         "eeg": eeg_stats,
+        "eog": eog_stats,
+        "museeog": museeog_stats,
         "fusion": fusion_stats,
         "eeg_lead_s": eeg_lead_s,
         "episodes": all_episodes,
         # The exact (valid, post-warmup) series already computed above — exposed as-is for
         # plotting (e.g. tools/report.py) so callers never need to recompute filtering or the
         # EEG ratio_norm baseline themselves.
-        "series": {"camera": cam_series, "eeg": eeg_series},
+        "series": series_by_modality,
         "quality": {
             "pct_face_valid": pct_face_valid,
             "pct_contact_ok": pct_contact_ok,
+            "pct_eog_contact_ok": pct_eog_contact_ok,
+            "pct_museeog_contact_ok": pct_museeog_contact_ok,
             "valid_session": valid_session,
         },
         "params": {
@@ -111,6 +154,7 @@ def summarize_session(
             "perclos_threshold": perclos_threshold,
             "eeg_ratio_threshold": eeg_ratio_threshold,
             "eeg_calibration_seconds": eeg_calibration_seconds,
+            "eog_perclos_threshold": eog_perclos_threshold,
         },
     }
 
@@ -154,6 +198,38 @@ def _eeg_samples(rows: list[dict]) -> list[tuple[float, float, bool]]:
             continue
         out.append((t_rel, ratio, _to_bool(row.get("contact_ok", "true"))))
     return out
+
+
+def _eog_samples(rows: list[dict]) -> list[tuple[float, float, bool]]:
+    """(t_rel, eog_perclos, valid) — shared by eog.csv (BITalino) and eog_muse.csv, which have
+    identical columns (core/eog_recorder.py). Rows logged before the live detector finished its
+    baseline calibration (status 'idle'/'calibrating') carry a not-yet-meaningful eog_perclos,
+    so they're marked invalid the same way face_detected=False rows are for the camera."""
+    out = []
+    for row in rows:
+        try:
+            t_rel = float(row["t_rel"])
+            perclos = float(row["eog_perclos"])
+        except (KeyError, ValueError):
+            continue
+        classified = str(row.get("status", "")).strip().lower() in ("awake", "drowsy")
+        out.append((t_rel, perclos, classified and _to_bool(row.get("contact_ok", "true"))))
+    return out
+
+
+def _mean_blink_rate(rows: list[dict], warmup_seconds: float) -> float | None:
+    """Mean of the recorded blink_rate column over valid, post-warmup, classified rows."""
+    values = []
+    for row in rows:
+        try:
+            t_rel = float(row["t_rel"])
+            blink_rate = float(row["blink_rate"])
+        except (KeyError, ValueError):
+            continue
+        classified = str(row.get("status", "")).strip().lower() in ("awake", "drowsy")
+        if classified and _to_bool(row.get("contact_ok", "true")) and t_rel >= warmup_seconds:
+            values.append(blink_rate)
+    return (sum(values) / len(values)) if values else None
 
 
 # ----------------------------------------------------------------------

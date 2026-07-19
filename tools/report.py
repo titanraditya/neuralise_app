@@ -30,8 +30,23 @@ from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Tabl
 
 from core.aggregate import summarize_session
 
-MODALITY_COLORS = {"camera": "#2563eb", "eeg": "#d97706", "fusion": "#dc2626"}
-MODALITY_LABELS = {"camera": "Kamera", "eeg": "EEG", "fusion": "Gabungan"}
+MODALITY_COLORS = {
+    "camera": "#2563eb",
+    "eeg": "#d97706",
+    "fusion": "#dc2626",
+    "eog": "#7c3aed",
+    "museeog": "#0f766e",
+}
+MODALITY_LABELS = {
+    "camera": "Kamera",
+    "eeg": "EEG",
+    "fusion": "Gabungan",
+    "eog": "EOG (BITalino)",
+    "museeog": "EOG (Muse)",
+}
+# PERCLOS-family modalities share the left plot axis: all three are a 0–1 "fraction of time
+# eyes closed" with the same 0.15 drowsy threshold. EEG (ratio vs baseline) gets its own axis.
+PERCLOS_FAMILY = ("camera", "eog", "museeog")
 MAX_EPISODE_ROWS = 8
 SEVERITY_BUCKETS = [(10.0, "Rendah", "#1f9d55"), (30.0, "Sedang", "#d97706"), (None, "Tinggi", "#dc2626")]
 
@@ -60,45 +75,70 @@ def render_session_report(session_dir: str | Path) -> Path:
 # ----------------------------------------------------------------------
 
 def _render_timeline_png(summary: dict, out_path: Path) -> None:
-    cam_series = summary["series"]["camera"]
-    eeg_series = summary["series"]["eeg"]
+    """Only the session's own modalities are drawn (summary['modalities']): PERCLOS-family
+    series share the left axis; the EEG-ratio axis only exists when EEG was part of the
+    session (as the sole axis when nothing PERCLOS-shaped was recorded)."""
+    modalities = summary["modalities"]
     params = summary["params"]
+    perclos_keys = [m for m in PERCLOS_FAMILY if modalities.get(m)]
+    has_eeg = bool(modalities.get("eeg"))
 
-    fig, ax_cam = plt.subplots(figsize=PLOT_FIGSIZE)
-    ax_eeg = ax_cam.twinx()
+    plot_labels = {
+        "camera": "PERCLOS (Kamera)",
+        "eog": "PERCLOS EOG (BITalino)",
+        "museeog": "PERCLOS EOG (Muse)",
+        "eeg": "Rasio EEG",
+    }
 
-    if cam_series:
-        t, v = zip(*cam_series)
-        ax_cam.plot(t, v, color=MODALITY_COLORS["camera"], linewidth=1.2, label="PERCLOS (Kamera)")
-    if eeg_series:
-        t, v = zip(*eeg_series)
-        ax_eeg.plot(t, v, color=MODALITY_COLORS["eeg"], linewidth=1.2, label="Rasio EEG")
+    fig, ax_left = plt.subplots(figsize=PLOT_FIGSIZE)
+    if perclos_keys and has_eeg:
+        ax_perclos, ax_eeg = ax_left, ax_left.twinx()
+    elif has_eeg:
+        ax_perclos, ax_eeg = None, ax_left
+    else:
+        ax_perclos, ax_eeg = ax_left, None
 
-    if not cam_series and not eeg_series:
-        ax_cam.text(0.5, 0.5, "Tidak ada data valid untuk ditampilkan", ha="center", va="center",
-                    transform=ax_cam.transAxes, color="#888888")
+    plotted_any = False
+    if ax_perclos is not None:
+        for key in perclos_keys:
+            series = summary["series"][key]
+            if series:
+                t, v = zip(*series)
+                ax_perclos.plot(t, v, color=MODALITY_COLORS[key], linewidth=1.2,
+                                label=plot_labels[key])
+                plotted_any = True
+        ax_perclos.axhline(params["perclos_threshold"], color="#6b7585", linestyle="--",
+                           linewidth=0.8, alpha=0.6)
+        ax_perclos.set_ylabel("PERCLOS (proporsi mata tertutup)", color="#333333")
+        ax_perclos.set_ylim(bottom=0)
+    if ax_eeg is not None:
+        eeg_series = summary["series"]["eeg"]
+        if eeg_series:
+            t, v = zip(*eeg_series)
+            ax_eeg.plot(t, v, color=MODALITY_COLORS["eeg"], linewidth=1.2, label=plot_labels["eeg"])
+            plotted_any = True
+        ax_eeg.axhline(params["eeg_ratio_threshold"], color=MODALITY_COLORS["eeg"], linestyle="--",
+                       linewidth=0.8, alpha=0.6)
+        ax_eeg.set_ylabel("Rasio EEG (vs awal sesi)", color=MODALITY_COLORS["eeg"])
+        ax_eeg.tick_params(axis="y", labelcolor=MODALITY_COLORS["eeg"])
+        ax_eeg.set_ylim(bottom=0)
 
-    ax_cam.axhline(params["perclos_threshold"], color=MODALITY_COLORS["camera"], linestyle="--",
-                   linewidth=0.8, alpha=0.6)
-    ax_eeg.axhline(params["eeg_ratio_threshold"], color=MODALITY_COLORS["eeg"], linestyle="--",
-                   linewidth=0.8, alpha=0.6)
+    if not plotted_any:
+        ax_left.text(0.5, 0.5, "Tidak ada data valid untuk ditampilkan", ha="center", va="center",
+                     transform=ax_left.transAxes, color="#888888")
 
-    for ep in summary["episodes"]:
-        ax_cam.axvspan(ep["start_s"], ep["start_s"] + ep["duration_s"],
-                       color=MODALITY_COLORS[ep["modality"]], alpha=0.12, linewidth=0)
+    for ep in _display_episodes(summary):
+        ax_left.axvspan(ep["start_s"], ep["start_s"] + ep["duration_s"],
+                        color=MODALITY_COLORS[ep["modality"]], alpha=0.12, linewidth=0)
 
-    ax_cam.set_xlabel("Waktu sejak sesi dimulai (detik)")
-    ax_cam.set_ylabel("PERCLOS (% mata tertutup)", color=MODALITY_COLORS["camera"])
-    ax_eeg.set_ylabel("Rasio EEG (vs awal sesi)", color=MODALITY_COLORS["eeg"])
-    ax_cam.tick_params(axis="y", labelcolor=MODALITY_COLORS["camera"])
-    ax_eeg.tick_params(axis="y", labelcolor=MODALITY_COLORS["eeg"])
-    ax_cam.set_ylim(bottom=0)
-    ax_eeg.set_ylim(bottom=0)
+    ax_left.set_xlabel("Waktu sejak sesi dimulai (detik)")
 
-    handles_cam, labels_cam = ax_cam.get_legend_handles_labels()
-    handles_eeg, labels_eeg = ax_eeg.get_legend_handles_labels()
-    if handles_cam or handles_eeg:
-        ax_cam.legend(handles_cam + handles_eeg, labels_cam + labels_eeg, loc="upper right", fontsize=8)
+    handles, labels = ax_left.get_legend_handles_labels()
+    if ax_eeg is not None and ax_eeg is not ax_left:
+        h, l = ax_eeg.get_legend_handles_labels()
+        handles, labels = handles + h, labels + l
+    if handles:
+        ax_left.legend(handles, labels, loc="upper right", fontsize=8)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=PLOT_DPI)
@@ -133,13 +173,9 @@ def _build_pdf(summary: dict, png_path: Path, out_path: Path) -> None:
         Paragraph(f"Laporan Sesi Drowsiness — {summary['session_id']}", title_style),
         Paragraph(_header_line(summary), subhead_style),
         Spacer(1, 5),
-        Paragraph(_quality_line(summary["quality"]), body_style),
+        Paragraph(_quality_line(summary), body_style),
         Spacer(1, 10),
-        Paragraph(
-            "<b>Ringkasan deteksi kantuk</b> — gabungan kamera &amp; EEG "
-            "(kantuk tercatat begitu salah satu dari keduanya mendeteksi kantuk):",
-            body_style,
-        ),
+        Paragraph(_summary_heading(summary), body_style),
         Spacer(1, 4),
         _tiles_table(summary, content_width, tile_label_style, tile_value_style),
         Spacer(1, 10),
@@ -147,51 +183,100 @@ def _build_pdf(summary: dict, png_path: Path, out_path: Path) -> None:
         Spacer(1, 8),
         _episode_and_severity_row(summary, content_width, body_style, caption_style),
         Spacer(1, 10),
-        Paragraph(_params_line(summary["params"]), caption_style),
+        Paragraph(_params_line(summary), caption_style),
         Spacer(1, 3),
-        Paragraph(
-            "<i>Catatan: \"Gabungan\" berarti hasil kombinasi kamera + EEG, bukan alat ukur "
-            "tersendiri. \"Selisih EEG vs Kamera\" bernilai positif jika EEG mendeteksi kantuk "
-            "lebih dulu daripada kamera, dan negatif jika kamera lebih dulu. Nilai puncak pada "
-            "tabel episode memakai satuan PERCLOS untuk episode dari Kamera dan rasio EEG untuk "
-            "episode dari EEG. Ambang deteksi di atas belum tervalidasi secara klinis; \"waktu "
-            "kantuk pertama\" adalah saat sistem ini pertama kali mendeteksi tanda kantuk, bukan "
-            "diagnosis onset tidur secara medis. Semua angka dihitung hanya dari segmen data yang "
-            "valid (wajah terdeteksi / kontak EEG baik), di luar masa pemanasan awal sistem.</i>",
-            caption_style,
-        ),
+        Paragraph(f"<i>{_notes_line(summary)}</i>", caption_style),
     ]
 
     doc.build(elements)
 
 
+# ----------------------------------------------------------------------
+# Modality selection — the report only shows the modalities this session recorded
+# (summary["modalities"], from meta.json's has_* flags / recorded data).
+# ----------------------------------------------------------------------
+
+def _active_modalities(summary: dict) -> list[str]:
+    return [m for m in ("camera", "eeg", "eog", "museeog") if summary["modalities"].get(m)]
+
+
+def _has_fusion(summary: dict) -> bool:
+    """The OR-rule fusion only means something when both of its inputs were recorded — EOG is
+    never part of it (mirrors the live status panel)."""
+    modalities = summary["modalities"]
+    return bool(modalities.get("camera")) and bool(modalities.get("eeg"))
+
+
+def _display_episodes(summary: dict) -> list[dict]:
+    """Without fusion, its episodes would just duplicate the single source modality's rows."""
+    episodes = summary["episodes"]
+    if _has_fusion(summary):
+        return episodes
+    return [ep for ep in episodes if ep["modality"] != "fusion"]
+
+
+def _primary_stats(summary: dict) -> tuple[str, dict]:
+    """(modality_key, stats) the headline tiles + severity label are computed from: the
+    camera+EEG fusion when both were recorded, otherwise the session's single main modality."""
+    if _has_fusion(summary):
+        return "fusion", summary["fusion"]
+    for key in ("camera", "eeg", "eog", "museeog"):
+        if summary["modalities"].get(key):
+            return key, summary[key]
+    return "fusion", summary["fusion"]  # no modality at all — all-NA tiles
+
+
+def _summary_heading(summary: dict) -> str:
+    if _has_fusion(summary):
+        return (
+            "<b>Ringkasan deteksi kantuk</b> — gabungan kamera &amp; EEG "
+            "(kantuk tercatat begitu salah satu dari keduanya mendeteksi kantuk):"
+        )
+    key, _ = _primary_stats(summary)
+    return f"<b>Ringkasan deteksi kantuk</b> — berdasarkan {MODALITY_LABELS[key]}:"
+
+
 def _header_line(summary: dict) -> str:
     duration = _format_duration(summary["started_at"], summary["ended_at"])
     date_str = (summary["started_at"] or "")[:10] or "-"
+    modality_names = ", ".join(MODALITY_LABELS[m] for m in _active_modalities(summary)) or "-"
     return (
         f"Nama: <b>{summary['subject_code'] or '-'}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Kebisingan: <b>{summary['noise_condition'] or '-'}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Durasi: <b>{duration}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Tanggal: <b>{date_str}</b>"
+        f"<br/>Modalitas sesi: <b>{modality_names}</b>"
     )
 
 
-def _quality_line(quality: dict) -> str:
-    return (
-        f"Kualitas data — wajah terdeteksi: <b>{_fmt_pct(quality['pct_face_valid'])}</b> &nbsp;|&nbsp; "
-        f"kontak EEG baik: <b>{_fmt_pct(quality['pct_contact_ok'])}</b> &nbsp;|&nbsp; "
-        f"sesi valid: <b>{'Ya' if quality['valid_session'] else 'Tidak'}</b>"
-    )
+def _quality_line(summary: dict) -> str:
+    quality = summary["quality"]
+    modalities = summary["modalities"]
+    parts = []
+    if modalities.get("camera"):
+        parts.append(f"wajah terdeteksi: <b>{_fmt_pct(quality['pct_face_valid'])}</b>")
+    if modalities.get("eeg"):
+        parts.append(f"kontak EEG baik: <b>{_fmt_pct(quality['pct_contact_ok'])}</b>")
+    if modalities.get("eog"):
+        parts.append(f"kontak EOG (BITalino) baik: <b>{_fmt_pct(quality['pct_eog_contact_ok'])}</b>")
+    if modalities.get("museeog"):
+        parts.append(f"kontak EOG (Muse) baik: <b>{_fmt_pct(quality['pct_museeog_contact_ok'])}</b>")
+    parts.append(f"sesi valid: <b>{'Ya' if quality['valid_session'] else 'Tidak'}</b>")
+    return "Kualitas data — " + " &nbsp;|&nbsp; ".join(parts)
 
 
 def _tiles_table(summary: dict, content_width: float, label_style, value_style) -> Table:
-    fusion = summary["fusion"]
+    key, stats = _primary_stats(summary)
     tiles = [
-        ("Waktu Kantuk Pertama", _fmt_seconds(fusion["onset_latency_s"])),
-        ("% Waktu Kantuk", _fmt_pct(fusion["pct_drowsy"])),
-        ("Jumlah Episode Kantuk", str(fusion["episode_count"])),
-        ("Episode Kantuk Terlama", _fmt_seconds(fusion["longest_episode_s"])),
-        ("Selisih EEG vs Kamera", _fmt_seconds(summary["eeg_lead_s"])),
+        ("Waktu Kantuk Pertama", _fmt_seconds(stats["onset_latency_s"])),
+        ("% Waktu Kantuk", _fmt_pct(stats["pct_drowsy"])),
+        ("Jumlah Episode Kantuk", str(stats["episode_count"])),
+        ("Episode Kantuk Terlama", _fmt_seconds(stats["longest_episode_s"])),
     ]
+    if key == "fusion":
+        tiles.append(("Selisih EEG vs Kamera", _fmt_seconds(summary["eeg_lead_s"])))
+    else:
+        peak = stats.get("peak")
+        tiles.append(("Nilai Puncak", f"{peak:.2f}" if peak is not None else "NA"))
     data = [
         [Paragraph(value, value_style) for _, value in tiles],
         [Paragraph(label, label_style) for label, _ in tiles],
@@ -208,7 +293,7 @@ def _tiles_table(summary: dict, content_width: float, label_style, value_style) 
 
 
 def _episode_and_severity_row(summary: dict, content_width: float, body_style, caption_style) -> Table:
-    episodes = summary["episodes"]
+    episodes = _display_episodes(summary)
     shown = episodes[:MAX_EPISODE_ROWS]
     remaining = len(episodes) - len(shown)
 
@@ -254,39 +339,98 @@ def _severity_trend_panel(summary: dict, body_style, caption_style) -> list:
     reportlab's tables.py). KeepTogether would look like a drop-in alternative here but its
     wrap() deliberately returns a giant sentinel height to force a page split when used as a
     top-level flowable, which blows up Table's real cell-height calculation."""
-    fusion = summary["fusion"]
-    label, hex_color = _severity_label(fusion["pct_drowsy"])
-    cam_trend = _fmt_trend(summary["camera"]["trend"], "{:.3f}")
-    eeg_trend = _fmt_trend(summary["eeg"]["trend"], "{:.2f}")
+    modalities = summary["modalities"]
+    primary_key, primary = _primary_stats(summary)
+    severity_source = "gabungan" if primary_key == "fusion" else MODALITY_LABELS[primary_key]
+    label, hex_color = _severity_label(primary["pct_drowsy"])
 
-    return [
+    flowables = [
         Paragraph(
-            f"<b>Tingkat Keparahan Kantuk (gabungan):</b> "
+            f"<b>Tingkat Keparahan Kantuk ({severity_source}):</b> "
             f"<font color='{hex_color}'><b>{label}</b></font>",
             body_style,
         ),
         Spacer(1, 4),
-        Paragraph(f"Tren PERCLOS — persentase mata tertutup (awal → tengah → akhir): {cam_trend}", body_style),
-        Paragraph(
+    ]
+    if modalities.get("camera"):
+        cam_trend = _fmt_trend(summary["camera"]["trend"], "{:.3f}")
+        flowables.append(Paragraph(
+            f"Tren PERCLOS Kamera — persentase mata tertutup (awal → tengah → akhir): {cam_trend}",
+            body_style,
+        ))
+    if modalities.get("eeg"):
+        eeg_trend = _fmt_trend(summary["eeg"]["trend"], "{:.2f}")
+        flowables.append(Paragraph(
             f"Tren Rasio EEG — kenaikan band power vs awal sesi (awal → tengah → akhir): {eeg_trend}",
             body_style,
-        ),
+        ))
+    for key in ("eog", "museeog"):
+        if not modalities.get(key):
+            continue
+        stats = summary[key]
+        trend = _fmt_trend(stats["trend"], "{:.3f}")
+        blink = stats.get("mean_blink_rate")
+        blink_str = f"{blink:.1f}/menit" if blink is not None else "NA"
+        flowables.append(Paragraph(
+            f"Tren PERCLOS {MODALITY_LABELS[key]} (awal → tengah → akhir): {trend} "
+            f"— rata-rata blink rate: {blink_str}",
+            body_style,
+        ))
+    flowables += [
         Spacer(1, 4),
         Paragraph(
-            "Tingkat keparahan ini hanya label deskriptif berdasarkan % waktu kantuk (gabungan "
-            "kamera + EEG) untuk penilaian cepat, bukan skor diagnosis klinis.",
+            f"Tingkat keparahan ini hanya label deskriptif berdasarkan % waktu kantuk "
+            f"({severity_source}) untuk penilaian cepat, bukan skor diagnosis klinis.",
             caption_style,
         ),
     ]
+    return flowables
 
 
-def _params_line(params: dict) -> str:
-    return (
-        f"Parameter: ambang PERCLOS={params['perclos_threshold']:.2f}, "
-        f"ambang rasio EEG={params['eeg_ratio_threshold']:.2f}×baseline, "
-        f"histeresis aktif/nonaktif={params['hysteresis_on_seconds']:.0f}s/{params['hysteresis_off_seconds']:.0f}s, "
-        f"pemanasan awal={params['warmup_seconds']:.0f}s, kalibrasi EEG={params['eeg_calibration_seconds']:.0f}s."
+def _params_line(summary: dict) -> str:
+    params = summary["params"]
+    modalities = summary["modalities"]
+    parts = []
+    if modalities.get("camera"):
+        parts.append(f"ambang PERCLOS kamera={params['perclos_threshold']:.2f}")
+    if modalities.get("eeg"):
+        parts.append(f"ambang rasio EEG={params['eeg_ratio_threshold']:.2f}×baseline")
+    if modalities.get("eog") or modalities.get("museeog"):
+        parts.append(f"ambang PERCLOS EOG={params['eog_perclos_threshold']:.2f}")
+    parts.append(
+        f"histeresis aktif/nonaktif={params['hysteresis_on_seconds']:.0f}s/{params['hysteresis_off_seconds']:.0f}s"
     )
+    parts.append(f"pemanasan awal={params['warmup_seconds']:.0f}s")
+    if modalities.get("eeg"):
+        parts.append(f"kalibrasi EEG={params['eeg_calibration_seconds']:.0f}s")
+    return "Parameter: " + ", ".join(parts) + "."
+
+
+def _notes_line(summary: dict) -> str:
+    modalities = summary["modalities"]
+    sentences = []
+    if _has_fusion(summary):
+        sentences.append(
+            "Catatan: \"Gabungan\" berarti hasil kombinasi kamera + EEG, bukan alat ukur "
+            "tersendiri. \"Selisih EEG vs Kamera\" bernilai positif jika EEG mendeteksi kantuk "
+            "lebih dulu daripada kamera, dan negatif jika kamera lebih dulu."
+        )
+    else:
+        sentences.append("Catatan:")
+    if modalities.get("eog") or modalities.get("museeog"):
+        sentences.append(
+            "EOG dianalisis sebagai modalitas mandiri — tidak ikut digabung ke deteksi "
+            "gabungan kamera + EEG."
+        )
+    sentences.append(
+        "Nilai puncak pada tabel episode memakai satuan PERCLOS untuk episode dari "
+        "Kamera/EOG dan rasio EEG untuk episode dari EEG. Ambang deteksi di atas belum "
+        "tervalidasi secara klinis; \"waktu kantuk pertama\" adalah saat sistem ini pertama "
+        "kali mendeteksi tanda kantuk, bukan diagnosis onset tidur secara medis. Semua angka "
+        "dihitung hanya dari segmen data yang valid (wajah terdeteksi / kontak sensor baik), "
+        "di luar masa pemanasan awal sistem."
+    )
+    return " ".join(sentences)
 
 
 def _severity_label(pct_drowsy: float | None) -> tuple[str, str]:

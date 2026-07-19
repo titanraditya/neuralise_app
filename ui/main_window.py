@@ -382,7 +382,13 @@ class MainWindow(QMainWindow):
         # session_dir may be relative (Session() defaults to a relative "recordings/" base) —
         # resolve it against the GUI's cwd before handing it to a subprocess that runs with a
         # different working directory (PROJECT_ROOT), so the two can't disagree about the path.
-        process.setArguments(["-m", "tools.report", str(Path(session_dir).resolve())])
+        session_arg = str(Path(session_dir).resolve())
+        if getattr(sys, "frozen", False):
+            # Frozen exe: `-m tools.report` tak berlaku; re-invoke exe dgn sentinel yang
+            # ditangani di main() sebelum GUI dibuat (lihat main.py).
+            process.setArguments(["--run-report", session_arg])
+        else:
+            process.setArguments(["-m", "tools.report", session_arg])
         process.setWorkingDirectory(str(PROJECT_ROOT))
         process.finished.connect(lambda code, status: self._on_report_finished(session_id, code, status))
         self._report_processes[session_id] = process
